@@ -15,7 +15,7 @@ Postranní seznam aplikace řadí okna podle času, ne podle toho, co chtějí o
 co máš udělat:
 
 - **Čeká na tebe** — Claude skončil a ptá se (otázka je vidět přímo pod názvem),
-- **Pracuje** — právě běží,
+- **Pracuje** — právě běží, nebo mu na pozadí ještě pracují subagenti,
 - **Končí cache** — okno bylo naposledy aktivní před 50–60 min; když do něj napíšeš teď,
   pokračuje levně z cache (červeně „za 6 min“),
 - **Nepřečtené** — Claude odpověděl a ty jsi okno od té doby neotevřel,

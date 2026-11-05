@@ -126,6 +126,33 @@ type AppRecord = {
   lastTurnEdgeAt?: number
   // Remote Control sessions of the window, the current one last.
   bridgeSessionIds?: string[]
+  // The CLI session behind the window and the folders it ran in: they name its transcript folder.
+  cliSessionId?: string
+  cwd?: string
+  originCwd?: string
+}
+
+// A window whose turn has ended can still be working: subagents it left running in the
+// background write their transcripts, ~/.claude/projects/<folder>/<cliSessionId>/subagents/*.jsonl,
+// while the app already counts the window as idle. A write within this long counts as work.
+const BACKGROUND_MS = 90_000
+
+let projectsDir: string | undefined
+
+async function worksInBackground($: EngineInterface, record: AppRecord | undefined, now: number): Promise<boolean> {
+  if (!record?.cliSessionId) return false
+  try {
+    projectsDir ??= `${await envVar($, 'USERPROFILE')}/.claude/projects`
+    // The CLI names a project's folder after its path, every character but letters and digits a dash.
+    for (const cwd of new Set([record.cwd, record.originCwd].filter((c): c is string => !!c))) {
+      const dir = `${projectsDir}/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${record.cliSessionId}/subagents`
+      if (!(await $.fs.exists(dir))) continue
+      if ((await $.fs.list(dir)).some(f => f.name.endsWith('.jsonl') && now - f.mtimeMs < BACKGROUND_MS)) return true
+    }
+  } catch {
+    // Unreadable: the app's own state stands.
+  }
+  return false
 }
 
 let recordDirs: string[] | undefined
@@ -355,17 +382,19 @@ async function refresh($: EngineInterface, force = false) {
           ? (record ?? (await readRecord($, dirs, s.sessionId)))?.bridgeSessionIds
           : undefined
         const rcLink = bridge?.length ? `claude://claude.ai/code/${bridge[bridge.length - 1]}` : ''
+        // Its turn over but subagents still at work: working, unless it asked you something.
+        const background = !s.isRunning && !waiting && (await worksInBackground($, record, now))
         rows.push({
           turn,
           deferred: !s.isRunning && deferred[s.sessionId] === (turn || act),
           id: s.sessionId,
           title: s.title,
           link: s.link ?? '',
-          isRunning: s.isRunning,
+          isRunning: s.isRunning || background,
           lastActivityAt: act,
           waiting: !s.isRunning && waiting,
           snippet,
-          unread,
+          unread: unread && !background,
           rc: s.remoteControlActive ?? false,
           rcLink: RC_LINK.test(rcLink) ? rcLink : '',
         })

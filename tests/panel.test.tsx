@@ -118,6 +118,8 @@ const RECORDS: Record<string, object> = {
   // Compacted 50 min ago, after its last reply 3 h ago that was read.
   compacted: { lastAssistantUuid: 'u-d', lastTurnEdgeAt: at(50), lastFocusedAt: at(120), postTurnSummary: done('u-d') },
   unread: { lastAssistantUuid: 'u-e', lastTurnEdgeAt: at(120), lastFocusedAt: at(180), postTurnSummary: done('u-e') },
+  // Its turn ended 10 min ago; a subagent it left running wrote half a minute ago.
+  busy: { lastAssistantUuid: 'u-f', lastTurnEdgeAt: at(10), lastFocusedAt: at(20), postTurnSummary: done('u-f'), cliSessionId: 'cli-f', cwd: 'C:\\w' },
 }
 const LISTED = [
   session('bumped', 'Posunuté', 50),
@@ -125,6 +127,7 @@ const LISTED = [
   session('fresh', 'Nová otázka', 120),
   session('compacted', 'Po compactu', 50),
   session('unread', 'Nepřečtené okno', 120),
+  session('busy', 'Subagenti na pozadí', 10),
 ]
 
 test('a poll goes by replies, drops seen old questions and keeps the polling window for the others', async ($, on) => {
@@ -138,14 +141,19 @@ test('a poll goes by replies, drops seen old questions and keeps the polling win
   on('ui.panes', () => ({ value: paneOpen ? [{ id: 'okna', title: 'Okna', isShown: true, isFocused: false }] : [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'C:/L\r\n', stderr: '' } }))
+  const subagents = /[\\/]C--w[\\/]cli-f[\\/]subagents$/
   on('fs.list', (_, e) => ({
-    value: e.path.endsWith('Claude-Data')
+    value: subagents.test(e.path)
+      ? [{ name: 'agent-1.jsonl', kind: 'file', size: 1, mtimeMs: at(0.5), isLink: false }]
+      : e.path.endsWith('Claude-Data')
       ? [{ name: 'claude_x', kind: 'dir' }]
       : e.path.endsWith('claude-code-sessions')
         ? [{ name: 'acc', kind: 'dir' }]
         : [{ name: 'org', kind: 'dir' }],
   }))
-  on('fs.exists', (_, e) => ({ value: e.path.endsWith('claude-code-sessions') || recordOf(e.path) in RECORDS }))
+  on('fs.exists', (_, e) => ({
+    value: e.path.endsWith('claude-code-sessions') || subagents.test(e.path) || recordOf(e.path) in RECORDS,
+  }))
   on('fs.read', (_, e) => ({ value: JSON.stringify(RECORDS[recordOf(e.path)]) }))
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
@@ -167,6 +175,8 @@ test('a poll goes by replies, drops seen old questions and keeps the polling win
 
   expect(lines).toContain('ČEKÁ · Nová otázka · 2 h — Mám to nasadit?')
   expect(lines).toContain('NOVÉ · Nepřečtené okno · 2 h')
+  // Subagents at work after the turn: working, not unread.
+  expect(lines.find(line => line.includes('Subagenti na pozadí'))).toMatch(/^PRACUJE · /)
   // Housekeeping and a compact are no work: no cache warning, the reply's age, no dot.
   expect(lines).toContain('- Posunuté · 5 h')
   expect(lines).toContain('- Po compactu · 3 h')
