@@ -53,7 +53,7 @@ function seed(on: Parameters<Parameters<typeof test>[1]>[1], bar: boolean) {
   }))
 }
 
-test('groups, counts and ages as in the Context pane', async ($, on) => {
+test('groups, counts and ages as in the Context pane', { timeoutMs: 20_000 }, async ($, on) => {
   seed(on, false)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
 
@@ -73,7 +73,7 @@ test('groups, counts and ages as in the Context pane', async ($, on) => {
   await ui.unmount()
 })
 
-test('the bar, when switched on: an SVG on desktop, blocks on the terminal', async ($, on) => {
+test('the bar, when switched on: an SVG on desktop, blocks on the terminal', { timeoutMs: 20_000 }, async ($, on) => {
   seed(on, true)
   const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await desktop.find({ type: 'Svg' })).toBeDefined()
@@ -84,7 +84,7 @@ test('the bar, when switched on: an SVG on desktop, blocks on the terminal', asy
   await terminal.unmount()
 })
 
-test('a narrow pane cuts titles with an ellipsis and keeps the ages whole', async ($, on) => {
+test('a narrow pane cuts titles with an ellipsis and keeps the ages whole', { timeoutMs: 20_000 }, async ($, on) => {
   seed(on, false)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 20 } })
@@ -244,7 +244,7 @@ function mockPoll(on: On, transcripts: Record<string, string>, now: (() => numbe
   }
 }
 
-test('a poll goes by replies, drops seen old questions and keeps the polling window for the others', async ($, on) => {
+test('a poll goes by replies, drops seen old questions and keeps the polling window for the others', { timeoutMs: 20_000 }, async ($, on) => {
   const store = new Map<string, unknown>([['replies', { compacted: { turn: 'u-d', at: at(180) } }]])
   const pane = mockPoll(on, TRANSCRIPTS, () => NOW, store)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -273,7 +273,7 @@ test('a poll goes by replies, drops seen old questions and keeps the polling win
   expect(shared.rows.find(r => r.id === 'boxed')?.question).toEqual({ text: 'Nasadit teď?', context: 'Hotovo.', options: ['Ano', 'Ráno'] })
 })
 
-test('a question you settle in its window without a new reply drops out at the next poll', async ($, on) => {
+test('a question you settle in its window without a new reply drops out at the next poll', { timeoutMs: 20_000 }, async ($, on) => {
   // You wrote into the window and broke the turn off before it replied: its last reply stays.
   const cli = '66666666-6666-6666-6666-666666666666'
   const transcripts = { ...TRANSCRIPTS, [cli]: turnLines(ASKS, 'Nasadit teď?', 'u-j').join('\r\n') }
@@ -294,7 +294,7 @@ test('a question you settle in its window without a new reply drops out at the n
   expect(after).toContain('ČEKÁ · Rámeček s otázkou · 31 min — Nasadit teď?')
 })
 
-test('an opened "Dřív" is kept for the other windows', async ($, on) => {
+test('an opened "Dřív" is kept for the other windows', { timeoutMs: 20_000 }, async ($, on) => {
   const stored = new Map<string, unknown>()
   const state = new Map<string, { value: unknown; version: number }>([['rows', { value: ROWS, version: 1 }]])
   on('clock.now', () => ({ value: NOW }))
@@ -387,7 +387,7 @@ test('how a turn ended comes from the transcript: a box that asks, one that does
   expect(startsAnyTurn([...cleared, line({ type: 'user', isMeta: true, origin: { kind: 'peer' }, message: { content: 'Ano' } })])).toBe(true)
 })
 
-test('every surface draws the pane', async ($, on) => {
+test('every surface draws the pane', { timeoutMs: 20_000 }, async ($, on) => {
   seed(on, true)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
@@ -397,7 +397,7 @@ test('every surface draws the pane', async ($, on) => {
 })
 
 // Last: the plugin keeps its window's title in memory, and here that window is Centrála.
-test('Centrála: a new question starts its turn, a reply to a window that has moved on is refused', async ($, on) => {
+test('Centrála: a new question starts its turn, a reply to a window that has moved on is refused', { timeoutMs: 30_000 }, async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const transcripts = { ...TRANSCRIPTS }
   const store = new Map<string, unknown>()

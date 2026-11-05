@@ -18,7 +18,9 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
 
 ## Soubory (`%USERPROFILE%\.claude\`)
 - `centrala.json` — fronta, píše ji plugin: `waiting` = otázky (`id`, `title`, `link`, `turn`, `question`,
-  `context`, `options`, `since`), `working` / `unread` / `deferred` = zásoba práce.
+  `context`, `options`, `since`, `delivery`), `working` / `unread` / `deferred` = zásoba práce,
+  `approvals` = okna, která čekají na schválení nástroje (jen ukázat; schvaluje se jen v okně).
+  `delivery: "plugin"` = okno hlásí svůj stav samo a odpověď mu doručí plugin (viz krok 5).
 - `noc.json` — příznak noci `{"od": ISO, "do": ISO, "okna": ["<id>", …]}`, píšeš ho ty.
 - `noc-zaznam.md` — co okna v noci rozhodla sama, připisují ho okna.
 
@@ -47,11 +49,14 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    Pak napiš „„<title>“ už vyřízeno v okně“ a nic dalšího mu neposílej — znovu to nezkoušej.
    Zmizí-li ti otevřený dialog (tah přerušen), nic nedělej: plugin otázky, které dál čekají, ukáže novým tahem.
 5. Za každou platnou odpověď:
-   - tlačítko okna nebo vlastní text → `send_message` (`mcp__ccd_session_mgmt__send_message`, načti přes
+   - okno, které výsledek dialogu jmenuje („Plugin předal odpověď oknům …“) → **nic mu neposílej**:
+     volbu mu předal plugin; okno ji vezme, jen pokud se pořád ptá na totéž (jinak se plugin zeptá
+     znovu). Krok 4 pro ně odpadá; v odpovědi napiš „„<title>“ ← <text> (předáno)“;
+   - tlačítko okna nebo vlastní text (ostatní okna) → `send_message` (`mcp__ccd_session_mgmt__send_message`, načti přes
      ToolSearch) s `session_id` = `id` a `message` = přesně ten text;
    - „Později“ → nic; „Odpovím v okně“ → odkaz `[<title>](#<id>)`.
 6. Odpověz krátce: řádek na odeslanou odpověď `„<title>“ ← <text>` s odkazem `[<title>](#<id>)`;
-   zásoba jen počty a odkazy: „Pracuje N: …“, „Nepřečtené N: …“, „Odloženo N“.
+   zásoba jen počty a odkazy: „Schválení N: …“ (z `approvals`), „Pracuje N: …“, „Nepřečtené N: …“, „Odloženo N“.
    **Nikdy nevypisuj čekající otázky z dřívějšího čtení** („zbývají…“): mezitím je mohl vyřídit jinde.
    Co dál čeká, ukáže plugin sám dalším tahem; vypsat smíš jen to, co je v právě přečteném `centrala.json`.
 

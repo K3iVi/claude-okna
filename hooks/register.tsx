@@ -4,6 +4,29 @@ import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'cl
 import type { RemotePc, Row } from '../types'
 import { startsAnyTurn, turnEnding } from './transcript'
 import type { BoxQuestion, TurnEnding } from './transcript'
+import {
+  ANSWER_DIR,
+  APPROVAL_SHOW_MS,
+  BEAT_MS,
+  STATE_DIR,
+  STATE_VERSION,
+  acceptsAnswer,
+  askOfBox,
+  askOfDialog,
+  dialogResult,
+  isTrusted,
+  parseAnswer,
+  parseState,
+  proseTail,
+} from './stav'
+import type { Answer, Ask, Phase, WindowState } from './stav'
+
+// Written into this window's state file: the readers know which rules wrote it.
+const PLUGIN_VERSION = '0.9.0'
+// Centrála puts a question to you once it has stood this long: one you answer in its window
+// right away never shows up there.
+const CENTRAL_DELAY_MS = 10_000
+const ANSWER_CHECK_MS = 3_000
 
 const PANE = 'okna'
 const TITLE = 'Okna'
@@ -406,13 +429,29 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
       const activity: Record<string, string> = {}
       const rows: Row[] = []
       for (const s of sessions) {
-        const record = s.isRunning ? undefined : await readRecord($, dirs, s.sessionId)
+        // What the window wrote of itself (0.9): believed while fresh and in step with the app; else
+        // (an older plugin there, a hook that failed) the transcript decides, as before.
+        const stated = await readState($, s.sessionId)
+        const record = s.isRunning && !stated ? undefined : await readRecord($, dirs, s.sessionId)
+        const st = stated && isTrusted(stated, now, record?.lastTurnEdgeAt) ? stated : undefined
+        // A permission prompt up a while: shown as waiting (only in the window can you answer it).
+        const approving = st?.phase === 'approval' && now - st.since >= APPROVAL_SHOW_MS
+        // The window's own word on whether it works (the app's "running" is not always right); a
+        // question the file holds while the app sees work is not believed (a turn's start was missed).
+        const running = st
+          ? (st.phase === 'working' || (st.phase === 'approval' && !approving) || (s.isRunning && st.phase !== 'dialog' && !approving))
+          : s.isRunning
         const turn = record?.lastAssistantUuid ?? ''
-        if (!s.isRunning) {
+        if (!running) {
           const edge = record?.lastTurnEdgeAt || Date.parse(s.lastActivityAt)
           if (!turn || replies[s.sessionId]?.turn !== turn) replies[s.sessionId] = { turn, at: edge }
         }
-        const repliedAt = s.isRunning ? Date.parse(s.lastActivityAt) : (replies[s.sessionId]?.at ?? 0)
+        const repliedAt =
+          st && (st.phase === 'dialog' || approving)
+            ? st.since
+            : running
+              ? Math.max(st?.since ?? 0, Date.parse(s.lastActivityAt) || 0)
+              : (replies[s.sessionId]?.at ?? 0)
         const act = new Date(repliedAt).toISOString()
         activity[s.sessionId] = act
         if (now - repliedAt > MAX_AGE_DAYS * 86_400_000) continue
@@ -420,16 +459,39 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
         let waiting = false
         let snippet = ''
         let question: BoxQuestion | undefined
-        if (!s.isRunning) {
-          // How the last turn closed, from the window's own transcript (read once per reply), and the
-          // app's verdict on it (the one its sidebar goes by; often never written). A row with a
-          // `question` is one Centrála may show: the box, the app or the window's own last words say so.
-          const ending = await endingOf($, record, turn, endings, s.sessionId)
+        let askId: string | undefined
+        let approval: string | undefined
+        if (!running) {
+          // How the last turn closed: from the window's own file, else from its transcript (read once
+          // per reply); and the app's verdict on it (the one its sidebar goes by; often never written).
+          // A row with a `question` is one Centrála may show.
           const summary = record?.postTurnSummary
           const fits = !!summary?.status_category && summary.summarizes_uuid === record?.lastAssistantUuid
           const blocked = fits && summary?.status_category === 'blocked'
           const fallback = 'Okno čeká na tvou odpověď.'
-          if (ending?.state === 'answered') {
+          const ending = st ? undefined : await endingOf($, record, turn, endings, s.sessionId)
+          if (approving && st?.approval) {
+            waiting = true
+            approval = `${st.approval.tool}${st.approval.summary ? `: ${st.approval.summary}` : ''}`
+            snippet = `Možná čeká na schválení — ${approval}`
+          } else if (st && (st.phase === 'asks' || st.phase === 'dialog') && st.ask) {
+            // The window says what it asks, and that nothing has come since.
+            waiting = true
+            question = { text: st.ask.text, context: st.ask.context, options: st.ask.options }
+            askId = st.ask.id
+          } else if (st) {
+            // Its turn ended without a question in a box (or was broken off).
+            if (st.aborted) {
+              // You broke it off: nothing asked waits.
+            } else if (blocked) {
+              waiting = true
+              question = { text: summary?.needs_action || summary?.status_detail || fallback, context: '', options: [] }
+            } else if (!fits && !st.boxed) {
+              const guess = classify(st.prose ?? '')
+              waiting = guess.waiting
+              if (waiting) question = { text: guess.snippet || fallback, context: '', options: [] }
+            }
+          } else if (ending?.state === 'answered') {
             // Something came after its last reply: on its way, nothing it asked waits.
           } else if (ending?.state === 'replied' && ending.ask) {
             waiting = true
@@ -473,24 +535,26 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
           question = undefined
         }
         // Unread: a reply since you last had the window in front (a compact is not one).
-        const unread = !s.isRunning && record?.lastFocusedAt !== undefined && !seen
+        const unread = !running && record?.lastFocusedAt !== undefined && !seen
         const bridge = s.remoteControlActive
           ? (record ?? (await readRecord($, dirs, s.sessionId)))?.bridgeSessionIds
           : undefined
         const rcLink = bridge?.length ? `claude://claude.ai/code/${bridge[bridge.length - 1]}` : ''
         // Its turn over but subagents still at work: working, unless it asked you something.
-        const background = !s.isRunning && !waiting && (await worksInBackground($, record, now))
+        const background = !running && !waiting && (await worksInBackground($, record, now))
         rows.push({
           turn,
-          deferred: !s.isRunning && deferred[s.sessionId] === (turn || act),
+          deferred: !running && deferred[s.sessionId] === (turn || act),
           id: s.sessionId,
           title: s.title,
           link: s.link ?? '',
-          isRunning: s.isRunning || background,
+          isRunning: running || background,
           lastActivityAt: act,
-          waiting: !s.isRunning && waiting,
+          waiting: !running && waiting,
           snippet,
-          ...(question && waiting && !s.isRunning ? { question } : {}),
+          ...(question && waiting && !running ? { question } : {}),
+          ...(askId && question && waiting && !running ? { askId } : {}),
+          ...(approval && waiting ? { approval } : {}),
           unread: unread && !background,
           rc: s.remoteControlActive ?? false,
           rcLink: RC_LINK.test(rcLink) ? rcLink : '',
@@ -683,6 +747,9 @@ type Question = {
   context: string
   options: string[]
   since: string
+  // Reported by the window itself: answered through its plugin ('plugin'), else by a message.
+  askId?: string
+  delivery: 'plugin' | 'message'
 }
 type Brief = { id: string; title: string; link: string; since: string }
 type Night = { od: string; do: string }
@@ -703,6 +770,126 @@ async function readNight($: EngineInterface): Promise<Night | undefined> {
   }
 }
 
+// --- This window's own state (0.9) ---------------------------------------------------------------
+
+// What this window last wrote of itself; undefined until its first turn (or a file it may adopt).
+let own: WindowState | undefined
+let ownTurn = ''
+// This turn's wrap_up box: undefined without one, its question (null: none) with.
+let box: Ask | null | undefined
+// The call whose permission prompt is up, and the open dialog an answer from Centrála may close.
+let approvalCall: string | undefined
+let dialogWaiter: { askId: string; resolve: (answer: Answer) => void } | undefined
+let answerMtime = -1
+
+const statePath = async ($: EngineInterface, id: string) => `${await homeDir($)}/${STATE_DIR}/${id}.json`
+const answerPath = async ($: EngineInterface, id: string) => `${await homeDir($)}/${ANSWER_DIR}/${id}.json`
+
+async function saveOwn($: EngineInterface) {
+  if (!own) return
+  await $.fs.write(await statePath($, own.id), JSON.stringify(own)).catch(() => undefined)
+}
+
+async function setOwn($: EngineInterface, phase: Phase, extra: Partial<WindowState> = {}) {
+  if (!selfId) await findSelf($).catch(() => undefined)
+  if (!selfId) return
+  const now = await $.clock.now()
+  own = { v: STATE_VERSION, plugin: PLUGIN_VERSION, id: selfId, turn: ownTurn, since: now, beat: now, phase, ...extra }
+  await saveOwn($)
+}
+
+// After a load (a reload, the app's restart): a question the window asked before still stands, so
+// its file is taken over; one left mid-turn is not (its hooks are gone) and goes stale instead.
+async function adoptOwn($: EngineInterface) {
+  if (!selfId) await findSelf($).catch(() => undefined)
+  if (!selfId || own) return
+  try {
+    const path = await statePath($, selfId)
+    if (!(await $.fs.exists(path))) return
+    const state = parseState((await $.fs.read(path)) as string, selfId)
+    // A turn may have begun while the file was read: that one is newer.
+    if (own) return
+    if (state && (state.phase === 'asks' || state.phase === 'done')) {
+      own = { ...state, plugin: PLUGIN_VERSION, beat: await $.clock.now() }
+      ownTurn = state.turn
+      await saveOwn($)
+    }
+  } catch {
+    // Nothing to adopt: the next turn writes the file.
+  }
+}
+
+async function beatOwn($: EngineInterface) {
+  if (!own) return
+  const now = await $.clock.now()
+  if (now - own.beat < BEAT_MS) return
+  own = { ...own, beat: now }
+  await saveOwn($)
+}
+
+async function readState($: EngineInterface, id: string): Promise<WindowState | undefined> {
+  try {
+    const path = await statePath($, id)
+    if (!(await $.fs.exists(path))) return undefined
+    return parseState((await $.fs.read(path)) as string, id)
+  } catch {
+    return undefined
+  }
+}
+
+// An answer Centrála's plugin left for this window: taken when it is for the question asked now,
+// else dropped. The file is emptied either way, so it is taken once.
+let isChecking = false
+
+async function checkAnswer($: EngineInterface) {
+  if (isChecking) return
+  isChecking = true
+  try {
+    await takeAnswer($)
+  } finally {
+    isChecking = false
+  }
+}
+
+async function takeAnswer($: EngineInterface) {
+  if (!selfId || !own) return
+  // The question as it stood before the file was read: it must still stand when the answer goes in.
+  const asked = own
+  const path = await answerPath($, selfId)
+  if (!(await $.fs.exists(path).catch(() => false))) return
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (!stat || stat.mtimeMs === answerMtime) return
+  const answer = parseAnswer((await $.fs.read(path).catch(() => '')) as string)
+  if (!answer) {
+    answerMtime = stat.mtimeMs
+    return
+  }
+  await $.fs.write(path, '{}')
+  answerMtime = (await $.fs.stat(path).catch(() => undefined))?.mtimeMs ?? stat.mtimeMs
+  if (!acceptsAnswer(own, answer)) {
+    $.ui.toast('Odpověď z Centrály zahozena: otázka v tomto okně už neplatí.')
+    return
+  }
+  if (own.phase === 'dialog') {
+    if (dialogWaiter?.askId === answer.askId) dialogWaiter.resolve(answer)
+    return
+  }
+  // You wrote in the window meanwhile: that is the answer, not this one.
+  if (!own || own.phase !== asked.phase || own.since !== asked.since || own.ask?.id !== answer.askId) return
+  await setOwn($, 'working')
+  const wrote = own
+  const sent = await $.prompt.submit({ text: answer.text, asUser: true }).catch(() => ({ drop: 'error' }))
+  if ((sent as { drop?: unknown }).drop !== undefined && own?.phase === wrote?.phase && own?.since === wrote?.since) {
+    // Not taken, and nothing else began meanwhile: the question stands as it was.
+    own = { ...asked, beat: await $.clock.now() }
+    await saveOwn($)
+    $.ui.toast('Odpověď z Centrály se do okna nepodařilo vložit — odpověz v něm.')
+  }
+}
+
+const describeCall = (input: Record<string, unknown>) =>
+  String(input.description ?? input.command ?? input.file_path ?? input.url ?? '').replace(/\s+/g, ' ').slice(0, 120)
+
 let isCentralTicking = false
 // When a prompt to the central window went out whose turn has not begun yet; 0 when none.
 // One is enough: the turn reads the whole queue. One that never starts a turn is sent again.
@@ -719,20 +906,76 @@ let inDialog = false
 // turn opened a dialog at all. A reply to a waiting window must be one of them.
 let picks = new Map<string, Set<string>>()
 let askedThisTurn = false
+// Windows this turn's dialogs answered through their own plugin: nothing more is sent to them.
+let delivered = new Set<string>()
 
 // Your answers in a dialog of Centrála, by the window each question names („<title>“ first).
 // "You sent a message instead" answers nothing.
+// The one window a dialog question names („<title>“ first); none when two windows share the title.
+function windowOf(question: string): Question | undefined {
+  const named = current.filter(q => question.trimStart().startsWith(`„${q.title}“`))
+  return named.length === 1 && current.filter(q => q.title === named[0]!.title).length === 1 ? named[0] : undefined
+}
+
+// Your answers in a dialog of Centrála, by the window each question names. "You sent a message
+// instead" answers nothing.
 function notePicks(out: unknown) {
   const answers = (out as { result?: { answers?: Record<string, unknown> } } | undefined)?.result?.answers ?? {}
   for (const [question, answer] of Object.entries(answers)) {
     if (typeof answer !== 'string' || !answer.trim() || /^\s*\[User did not answer/i.test(answer)) continue
-    for (const q of current) {
-      if (!question.trimStart().startsWith(`„${q.title}“`)) continue
-      const set = picks.get(q.id) ?? new Set<string>()
-      set.add(answer.trim())
-      picks.set(q.id, set)
+    const q = windowOf(question)
+    if (!q) continue
+    const set = picks.get(q.id) ?? new Set<string>()
+    set.add(answer.trim())
+    picks.set(q.id, set)
+  }
+}
+
+type Opened = { question: string; window: Question; labels: string[] }
+
+function openedDialog(input: { questions?: readonly { question?: string; options?: readonly { label?: string }[] }[] }): Opened[] {
+  const out: Opened[] = []
+  for (const q of input.questions ?? []) {
+    const window = typeof q.question === 'string' ? windowOf(q.question) : undefined
+    if (!window) continue
+    out.push({ question: q.question!, window, labels: (q.options ?? []).map(o => String(o.label ?? '').trim()) })
+  }
+  // A window named by two questions of one dialog: which answer counts is not guessed.
+  return out.filter(o => out.filter(x => x.window.id === o.window.id).length === 1)
+}
+
+// Answers the plugin handed to windows, waiting to be taken: by window, the question and when.
+let handed = new Map<string, { askId: string; at: number }>()
+const HANDED_WAIT_MS = 20_000
+
+// Windows that reported their question themselves get your pick from this plugin, not from the
+// model: it writes the answer for the window's plugin, which takes it only for the question the
+// dialog showed. Only one of the window's buttons or what you typed yourself goes: the dialog's
+// own extra buttons („Později“, „Odpovím v okně“) answer nothing, nor does a dialog that closed
+// itself while you were away.
+async function deliverPicks($: EngineInterface, opened: Opened[], out: unknown): Promise<string[]> {
+  const result = (out as { result?: { answers?: Record<string, unknown>; afkTimeoutMs?: unknown; followUp?: unknown } } | undefined)?.result
+  if (!result || result.afkTimeoutMs !== undefined || result.followUp) return []
+  const sent: string[] = []
+  for (const { question, window, labels } of opened) {
+    const raw = result.answers?.[question]
+    if (!window.askId || typeof raw !== 'string') continue
+    const text = raw.trim()
+    if (!text || /^\[User did not answer/i.test(text)) continue
+    const isButton = window.options.includes(text)
+    if (!isButton && labels.includes(text)) continue
+    const answer: Answer = { askId: window.askId, text, typed: !isButton, at: await $.clock.now() }
+    try {
+      await $.fs.write(await answerPath($, window.id), JSON.stringify(answer))
+      delivered.add(window.id)
+      shown.delete(window.id)
+      handed.set(window.id, { askId: window.askId, at: answer.at })
+      sent.push(window.title)
+    } catch {
+      // Not written: the model's send_message path stays open for it.
     }
   }
+  return sent
 }
 // The questions put to you, by window: the turn whose question it was. Kept while the window
 // is on that turn or working (a compact is no answer), dropped once it replies anew or is gone.
@@ -742,12 +985,16 @@ const toQuestion = (r: Row): Question => ({
   id: r.id,
   title: r.title,
   link: r.link,
-  turn: r.turn,
+  // The key the question is announced and checked by: its own id when the window reported it.
+  turn: r.askId || r.turn,
   question: r.question?.text || r.snippet,
   context: r.question?.context ?? '',
   options: r.question?.options ?? [],
   since: r.lastActivityAt,
+  ...(r.askId ? { askId: r.askId } : {}),
+  delivery: r.askId ? 'plugin' : 'message',
 })
+const questionKey = (r: Row) => r.askId || r.turn
 const brief = (r: Row): Brief => ({ id: r.id, title: r.title, link: r.link, since: r.lastActivityAt })
 
 // Whether the window still waits on the question of its reply `turn`, asked of the window itself:
@@ -755,6 +1002,14 @@ const brief = (r: Row): Brief => ({ id: r.id, title: r.title, link: r.link, sinc
 // session did), 'unknown' while working with no transcript to tell (a compact or an answer).
 async function stillAsks($: EngineInterface, id: string, turn: string): Promise<'yes' | 'no' | 'unknown'> {
   try {
+    // A question the window reported itself: its file says, while it is believed.
+    if (/^[bd]:/.test(turn)) {
+      const state = await readState($, id)
+      if (!state) return 'unknown'
+      const record = await readRecord($, await findRecordDirs($), id)
+      if (!isTrusted(state, await $.clock.now(), record?.lastTurnEdgeAt)) return 'unknown'
+      return (state.phase === 'asks' || state.phase === 'dialog') && state.ask?.id === turn ? 'yes' : 'no'
+    }
     const res = await $.mcp.call(SESSIONS, 'get_session', { session_id: id })
     if (res.isError) return 'unknown'
     const session = JSON.parse(textOf(res)) as Session
@@ -778,6 +1033,9 @@ async function stillAsks($: EngineInterface, id: string, turn: string): Promise<
 async function refuseSend($: EngineInterface, to: string, text: string): Promise<string | undefined> {
   if (!(await isCentral($))) return undefined
   if (/^\s*\[noc\]/.test(text)) return undefined
+  if (delivered.has(to)) {
+    return 'Nic neodesláno: odpověď tomuto oknu už doručil plugin (okno ji dostalo jako uživatelovu volbu). Napiš uživateli, že odešla, a nic dalšího mu neposílej.'
+  }
   const turn = shown.get(to) ?? current.find(q => q.id === to)?.turn
   if (!turn) return undefined
   if ((centralTurn || askedThisTurn) && !picks.get(to)?.has(text.trim())) {
@@ -812,13 +1070,18 @@ async function centralTick($: EngineInterface) {
     if (!polled) return
     const rows = notSelf(polled)
     const byId = new Map(rows.map(r => [r.id, r]))
+    const now = await $.clock.now()
+    // Only questions that have stood a while: one you answer in its window at once never comes here
+    // (nor into the queue the model reads).
     const waiting = rows
-      .filter(r => r.waiting && !r.deferred && r.turn && r.question)
+      .filter(r => r.waiting && !r.deferred && questionKey(r) && r.question)
+      // An answer handed to it is on its way: not asked again unless the window leaves it.
+      .filter(r => handed.get(r.id)?.askId !== questionKey(r))
       .map(toQuestion)
+      .filter(q => now - Date.parse(q.since) >= CENTRAL_DELAY_MS)
       .sort((a, b) => Date.parse(a.since) - Date.parse(b.since))
     current = waiting
     const night = (await readNight($)) ?? null
-    const now = await $.clock.now()
     // Written each tick: `at` says the queue is live.
     await $.fs.write(
       `${await homeDir($)}/${QUEUE_FILE}`,
@@ -828,6 +1091,8 @@ async function centralTick($: EngineInterface) {
           night,
           waiting,
           working: rows.filter(r => r.isRunning).map(brief),
+          // Permission prompts standing a while: answered only in their window.
+          approvals: rows.filter(r => r.approval).map(r => ({ ...brief(r), approval: r.approval })),
           unread: rows.filter(r => r.unread && !r.waiting && !r.deferred).map(brief),
           deferred: rows.filter(r => r.deferred).map(brief),
         },
@@ -839,7 +1104,7 @@ async function centralTick($: EngineInterface) {
     const announced: Record<string, string> = {}
     for (const [id, turn] of Object.entries(stored)) {
       const r = byId.get(id)
-      if (r && (r.isRunning || r.turn === turn)) announced[id] = turn
+      if (r && (r.isRunning || questionKey(r) === turn)) announced[id] = turn
     }
     // A question shown in the open dialog that its window no longer asks (you answered it there):
     // the dialog is dropped — only while it is open, never mid-send — and the rest asked again.
@@ -847,7 +1112,7 @@ async function centralTick($: EngineInterface) {
       let stale = false
       for (const [id, turn] of shown) {
         const r = byId.get(id)
-        if (r && !r.isRunning && r.turn === turn && r.waiting) continue
+        if (r && !r.isRunning && questionKey(r) === turn && r.waiting) continue
         if ((await stillAsks($, id, turn)) === 'no') {
           stale = true
           break
@@ -861,6 +1126,16 @@ async function centralTick($: EngineInterface) {
         inDialog = false
         promptedAt = 0
         await $.turn.abort({ turnId }).catch(() => undefined)
+      }
+    }
+    // Answers handed to windows: one the window has not taken while it still asks the same is put
+    // to you again (its plugin is gone or reloaded); one it took or moved on from is done with.
+    for (const [id, h] of handed) {
+      const r = byId.get(id)
+      if (!r || !r.waiting || questionKey(r) !== h.askId) handed.delete(id)
+      else if (now - h.at > HANDED_WAIT_MS) {
+        handed.delete(id)
+        delete announced[id]
       }
     }
     await $.store.set(ANNOUNCED, announced)
@@ -995,6 +1270,13 @@ export const register: Register = on => {
       if (await isCentral($)) await centralTick($)
       else await refresh($)
     })
+    // An answer from Centrála is taken within seconds (a stat of one small file).
+    $.clock.every(ANSWER_CHECK_MS, async () => {
+      // The beat here, not behind a poll that may take long.
+      await beatOwn($).catch(() => undefined)
+      await checkAnswer($).catch(() => undefined)
+    })
+    void adoptOwn($)
     await update($, barAtom, () => false)
     if ((await $.store.get('bar')) === true) await update($, barAtom, () => true)
     await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
@@ -1006,8 +1288,16 @@ export const register: Register = on => {
   // In the central window: a turn a prompt of this plugin (or /centrala) began reads the queue
   // as it is now, so what it holds counts as put to you.
   on('turn.start', async ($, e, next) => {
+    // Whatever begins a turn here (you, Centrála, a notification) answers what the window asked.
+    if (e.agentId === undefined) {
+      ownTurn = e.turnId
+      box = undefined
+      approvalCall = undefined
+      await setOwn($, 'working')
+    }
     if (e.agentId === undefined && (await isCentral($))) {
       picks = new Map()
+      delivered = new Set()
       askedThisTurn = false
       if (/\[okna\]|centrala/i.test(e.text)) {
         promptedAt = 0
@@ -1030,16 +1320,101 @@ export const register: Register = on => {
   // Centrála's dialog: open while it waits on you (a stale one is dropped); what you answer in it
   // is what its replies to the windows may say.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    if (!(await isCentral($))) return next(e)
+    if (e.agentId !== undefined) return next(e)
+    // Not before this load has seen the turn begin (a reload mid-turn): its end would go unseen.
+    if (!(await isCentral($)) && !ownTurn) return next(e)
+    if (!(await isCentral($))) {
+      // A window's own dialog: Centrála sees it, and an answer you pick there closes it.
+      const askId = `d:${ownTurn}:${e.tool_use_id ?? String(await $.clock.now())}`
+      await setOwn($, 'dialog', { ask: askOfDialog(askId, e as never) })
+      const answered = new Promise<Answer>(resolve => {
+        dialogWaiter = { askId, resolve }
+      })
+      try {
+        const call = next(e)
+        const won = await Promise.race([call.then(out => ({ out })), answered.then(answer => ({ answer }))])
+        if ('out' in won) return won.out
+        call.catch(() => undefined)
+        const at = new Date(won.answer.at || (await $.clock.now())).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+        return {
+          result: dialogResult(e as never, won.answer.text) as never,
+          context: [`Odpověď na tento dialog vybral uživatel v okně Centrála (${at}); plugin okna ji sem doručil a dialog zavřel.`],
+        }
+      } finally {
+        dialogWaiter = undefined
+        if (own?.phase === 'dialog' && own.ask?.id === askId) await setOwn($, 'working')
+      }
+    }
     askedThisTurn = true
     inDialog = centralTurn !== undefined
+    // Each question of this dialog with the window it names, as the queue was when it opened: an
+    // answer goes to that question, never to one the window asked meanwhile.
+    const opened = openedDialog(e as never)
     try {
       const out = await next(e)
       notePicks(out)
-      return out
+      const sent = out.deny === undefined ? await deliverPicks($, opened, out) : []
+      return sent.length && out.deny === undefined
+        ? {
+            ...out,
+            context: [
+              ...((out as { context?: readonly string[] }).context ?? []),
+              `Plugin předal odpověď oknům ${sent.map(t => `„${t}“`).join(', ')} (jako uživatelovu volbu); okno ji převezme do pár sekund, jen pokud se pořád ptá na totéž (jinak se Centrála zeptá znovu). Těm oknům nic neposílej, jen uživateli napiš, že odpověď předal plugin.`,
+            ],
+          }
+        : out
     } finally {
       inDialog = false
     }
+  })
+
+  // This turn's box: its question is what the window waits on once the turn ends.
+  on('tool.call', { tool: 'mcp__ccd_turn__wrap_up' }, async ($, e, next) => {
+    if (e.agentId === undefined) box = askOfBox(`b:${ownTurn}:${e.tool_use_id ?? ''}`, e as never)
+    return next(e)
+  })
+
+  // A permission prompt: shown in the panel (after a while), never answered from elsewhere.
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    // Only inside the window's running turn: a background agent's check after the turn ended (or a
+    // plugin's query) must not hide the question the turn closed on.
+    if (verdict.decision === 'ask' && e.tool_use_id && e.tool !== 'AskUserQuestion' && ownTurn && own?.phase === 'working') {
+      approvalCall = e.tool_use_id
+      await setOwn($, 'approval', { approval: { tool: e.tool, summary: describeCall((e.input ?? {}) as Record<string, unknown>) } })
+    }
+    return verdict
+  })
+
+  on('tool.call', async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      if (approvalCall !== undefined && e.tool_use_id === approvalCall) {
+        approvalCall = undefined
+        if (own?.phase === 'approval') await setOwn($, 'working')
+      }
+    }
+  })
+
+  // /clear ends the conversation the question belonged to: the window no longer asks it.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear' && own) {
+      approvalCall = undefined
+      box = undefined
+      await setOwn($, 'done', { boxed: false, prose: '', aborted: true }).catch(() => undefined)
+    }
+    return next(e)
+  })
+
+  on('session.compact', async ($, e, next) => {
+    const out = await next(e)
+    // The app counts a compact as a turn's end: the file says it saw it.
+    if (e.agentId === undefined && own) {
+      own = { ...own, since: await $.clock.now(), beat: await $.clock.now() }
+      await saveOwn($)
+    }
+    return out
   })
 
   // Centrála's replies to the windows, by either tool: refused when the window has moved on.
@@ -1057,7 +1432,20 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       picks = new Map()
+      delivered = new Set()
       askedThisTurn = false
+      if (e.turnId === ownTurn) {
+        approvalCall = undefined
+        if (e.reason === 'answer' && box) await setOwn($, 'asks', { ask: box })
+        else {
+          await setOwn($, 'done', {
+            boxed: box !== undefined,
+            prose: proseTail(e.answer ?? ''),
+            ...(e.reason === 'answer' ? {} : { aborted: true }),
+          })
+        }
+        box = undefined
+      }
     }
     if (e.turnId === centralTurn) {
       // The turn died before you saw its questions: they are put to you again.

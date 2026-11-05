@@ -17,6 +17,10 @@ export type Row = {
   deferred: boolean
   // This PC's waiting windows: the question as the window asked it, with the replies its buttons send.
   question?: { text: string; context: string; options: string[] }
+  // The question's exact id when the window reported it itself (0.9): Centrála's plugin answers it.
+  askId?: string
+  // The window has asked for a permission a while: what for (only shown, never answered remotely).
+  approval?: string
 }
 
 // The windows of another of your PCs, as that PC last sent them through your server.

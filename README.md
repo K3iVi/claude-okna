@@ -56,12 +56,24 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
   aplikace (ani jejímu „pracuje / nepracuje“) se nevěří.
 - Centrála sama hlídá ostatní okna (podle svých pravidel, ať mají ostatní okna jakoukoli verzi pluginu)
   a frontu přepisuje každých 10 s; starší fronta znamená, že plugin v Centrále neběží.
-- Zatím jen okna tohoto PC. Otázku, kterou okno klade dialogem s volbami (AskUserQuestion) uprostřed
-  práce, Centrála nevidí — okno se v tu chvíli tváří jako pracující; odpověz v něm.
+- Okno s pluginem 0.9+ hlásí svůj stav samo (viz níže): Centrála pak vidí i dialog s volbami, který
+  okno otevřelo uprostřed práce, a tvou volbu mu doručí plugin — okno ji dostane jako tvoji odpověď
+  (do dialogu jako klik, po skončeném tahu jako tvoji zprávu) a vezme ji, jen když se pořád ptá na totéž.
+  Model Centrály v tu chvíli nic neposílá.
+- Otázka se v Centrále ukáže, až 10 s trvá: když odpovíš rovnou v okně, Centrála ji vůbec neukáže.
+- Okno, které čeká na schválení nástroje, Centrála jen vypíše; schválit jde jen v okně.
+- Zatím jen okna tohoto PC.
 
 ## Jak panel pozná, že okno čeká
 
-Podle toho, jak skončil poslední tah okna, v tomto pořadí:
+Od verze 0.9 každé okno zapisuje svůj stav samo z vlastních hooků do
+`%USERPROFILE%\.claude\okna-stav\<okno>.json` (jeden soubor na okno, píše ho jen to okno): pracuje,
+ptá se (rámeček „Další krok“ s otázkou), dialog s volbami, čeká na schválení, hotovo. Cokoli, co v okně
+začne tah (tvoje zpráva, Centrála, oznámení), otázku hned ruší. Soubor platí, jen když ho okno v posledních
+2 minutách obnovilo a aplikace od jeho změny neviděla konec dalšího tahu; jinak (starší verze pluginu,
+selhaný hook) se pro to okno použije čtení přepisu níže.
+
+Bez platného souboru podle toho, jak skončil poslední tah okna, v tomto pořadí:
 
 1. po poslední odpovědi okna už něco přišlo (tvoje zpráva, i přerušená, zpráva jiného okna, `/clear`
    a psaní dál) → nečeká,
