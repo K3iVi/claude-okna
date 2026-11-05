@@ -16,6 +16,7 @@ const WAIT_EXPIRE_MS = 24 * 3_600_000
 // Optional settings in ~/.claude/okna.json (see README): your own server for the other PCs,
 // its key, and window titles never to list. Without the file the panel shows this PC alone.
 const CONFIG_FILE = '.claude/okna.json'
+const LEGACY_SYNC_FILE = '.claude/okna-sync.json'
 type Config = { sync?: { url?: string; key?: string }; hideTitles?: string[] }
 const RC_LINK = /^claude:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{8,64}$/
 
@@ -178,8 +179,14 @@ let config: Config | undefined
 async function readConfig($: EngineInterface): Promise<Config> {
   if (config) return config
   try {
-    const path = `${await envVar($, 'USERPROFILE')}/${CONFIG_FILE}`
+    const home = await envVar($, 'USERPROFILE')
+    const path = `${home}/${CONFIG_FILE}`
     config = (await $.fs.exists(path)) ? (JSON.parse((await $.fs.read(path)) as string) as Config) : {}
+    // Up to 0.5 the server sat alone in okna-sync.json ({url, key}); still read when okna.json has none.
+    const legacy = `${home}/${LEGACY_SYNC_FILE}`
+    if (!config.sync && (await $.fs.exists(legacy))) {
+      config = { ...config, sync: JSON.parse((await $.fs.read(legacy)) as string) as Config['sync'] }
+    }
   } catch {
     config = {}
   }

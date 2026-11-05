@@ -87,6 +87,7 @@ Soubor `%USERPROFILE%\.claude\okna.json`:
 
 - `hideTitles` — regulární výrazy (bez ohledu na velikost písmen); okna s takovým názvem se nezobrazí.
 - `sync` — server pro víc PC. Adresa musí být `https://`. Bez `sync` se nic neposílá.
+  (Starší `okna-sync.json` s `{"url", "key"}` z verze 0.5 se čte dál, když `okna.json` `sync` nemá.)
 
 Po změně souboru `/reload-plugins`. Soubor obsahuje klíč — nedávej ho do gitu ani do sdílené složky.
 
