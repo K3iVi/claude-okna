@@ -39,6 +39,8 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    - „Později“ → nic; „Odpovím v okně“ → odkaz `[<title>](#<id>)`.
 6. Odpověz krátce: řádek na odeslanou odpověď `„<title>“ ← <text>` s odkazem `[<title>](#<id>)`;
    zásoba jen počty a odkazy: „Pracuje N: …“, „Nepřečtené N: …“, „Odloženo N“.
+   **Nikdy nevypisuj čekající otázky z dřívějšího čtení** („zbývají…“): mezitím je mohl vyřídit jinde.
+   Co dál čeká, ukáže plugin sám dalším tahem; vypsat smíš jen to, co je v právě přečteném `centrala.json`.
 
 ## „noc“ (uživatel napíše „noc“, případně „noc do 8:00“)
 1. Přečti `centrala.json`. Cíl = okna z `working` a `waiting` (podle `link`/`id`; u `working` vezmi `id`
