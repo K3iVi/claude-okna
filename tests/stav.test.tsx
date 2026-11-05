@@ -136,10 +136,107 @@ test('the state file rules: what is believed, which answer is taken, how questio
   })
   const one = { questions: [{ question: 'Která?', header: 'X', options: [{ label: 'A' }, { label: 'B' }] }] }
   expect(askOfDialog('d', one)).toEqual({ id: 'd', text: 'Která?', context: '', options: ['A', 'B'] })
-  expect(dialogResult(one, 'B').answers).toEqual({ 'Která?': 'B' })
-  const two = { questions: [{ question: 'První?' }, { question: 'Druhá?' }] }
-  expect(askOfDialog('d', two)).toEqual({ id: 'd', text: '1) První? 2) Druhá?', context: '', options: [] })
-  expect(dialogResult(two, 'obě ano')).toEqual({ questions: two.questions, answers: {}, response: 'obě ano' })
+  expect(dialogResult(one, { text: 'B' }).answers).toEqual({ 'Která?': 'B' })
+  // Several questions: each keeps its own buttons, answered part by part.
+  const two = { questions: [{ question: 'První?', options: [{ label: 'A' }, { label: 'B' }] }, { question: 'Druhá?', options: [{ label: 'X' }] }] }
+  const asked2 = askOfDialog('d', two)
+  expect(asked2).toEqual({
+    id: 'd',
+    text: '1) První? 2) Druhá?',
+    context: '',
+    options: [],
+    parts: [{ text: 'První?', options: ['A', 'B'] }, { text: 'Druhá?', options: ['X'] }],
+  })
+  const parts = [{ text: 'B', typed: false }, { text: 'jinak', typed: true }]
+  expect(dialogResult(two, { text: '1) B 2) jinak', parts }).answers).toEqual({ 'První?': 'B', 'Druhá?': 'jinak' })
+  // An answer in words only (from a Centrála that knew no parts) goes as words.
+  expect(dialogResult(two, { text: 'obě ano' })).toEqual({ questions: two.questions, answers: {}, response: 'obě ano' })
+  const s2 = state('w', { phase: 'dialog', ask: asked2 })
+  expect(parseState(JSON.stringify(s2), 'w')?.ask?.parts?.length).toBe(2)
+  expect(acceptsAnswer(s2, { askId: 'd', text: '1) B 2) jinak', typed: true, at: NOW, parts })).toBe(true)
+  // Every part, each with its own buttons: one missing, or a button of another part, is not taken.
+  expect(acceptsAnswer(s2, { askId: 'd', text: '1) B', typed: false, at: NOW, parts: [parts[0]!] })).toBe(false)
+  expect(acceptsAnswer(s2, { askId: 'd', text: '1) X 2) X', typed: false, at: NOW, parts: [{ text: 'X', typed: false }, { text: 'X', typed: false }] })).toBe(false)
+  expect(acceptsAnswer(s2, { askId: 'd', text: 'obě', typed: true, at: NOW })).toBe(false)
+  expect(acceptsAnswer(s, { askId: 'b:t:1', text: '1) Ano', typed: false, at: NOW, parts: [{ text: 'Ano', typed: false }] })).toBe(false)
+})
+
+test('Centrála asks a dialog of several questions part by part and hands all answers back at once', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const sessions = [session('w9', 'FW na žádost', true)]
+  put(files, RECORD('w9'), { lastAssistantUuid: 'u-9', lastTurnEdgeAt: at(5), lastFocusedAt: at(10) })
+  const parts = [
+    { text: 'Schvaluješ schéma?', options: ['Schvaluji', 'Jen FW'] },
+    { text: 'Ze kterého FW?', options: ['soc1', 'p1'] },
+  ]
+  put(files, STATE('w9'), state('w9', { phase: 'dialog', since: at(1), ask: { id: 'd:t:9', text: '1) … 2) …', context: '', options: [], parts } }))
+  const env = mockEnv(on, clock, { self: 'Centrála', sessions, files })
+  let answers: Record<string, string> = {}
+  on('tool.call', async (_, e) => {
+    if (e.tool === 'AskUserQuestion') return { result: { questions: [], answers }, text: 'odpovězeno' }
+    return { result: {}, text: 'odesláno' }
+  })
+  on('turn.abort', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(10_000)
+  const queue = () => readJson<{ waiting: { id: string; options: string[]; parts?: { question: string; options: string[] }[] }[] }>(files, `${HOME}/.claude/centrala.json`)
+  expect(queue().waiting.find(w => w.id === 'w9')).toMatchObject({
+    options: [],
+    parts: [{ question: 'Schvaluješ schéma?', options: ['Schvaluji', 'Jen FW'] }, { question: 'Ze kterého FW?', options: ['soc1', 'p1'] }],
+  })
+  await $.turn.start({ text: env.prompts[0]?.text ?? '', turnId: 'c1' })
+  const q = (i: number) => ({
+    question: `„FW na žádost“ (${i + 1}/2): ${parts[i]!.text}`,
+    header: `FW na ž ${i + 1}/2`,
+    options: [...parts[i]!.options, 'Později'].map(label => ({ label, description: '' })),
+    multiSelect: false,
+  })
+  const questions = [q(0), q(1)]
+  // „Později“ on one part: nothing goes, the whole question keeps waiting.
+  answers = { [questions[0]!.question]: 'Schvaluji', [questions[1]!.question]: 'Později' }
+  await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+  expect(files.has(ANSWER('w9'))).toBe(false)
+  // One part asked alone: which answer counts is not guessed.
+  answers = { [questions[0]!.question]: 'Schvaluji' }
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [questions[0]] } as never)
+  expect(files.has(ANSWER('w9'))).toBe(false)
+  // Both answered (one in your own words): handed over together, in the parts' order.
+  answers = { [questions[1]!.question]: 'p1', [questions[0]!.question]: 'Jen FW, CRM potom' }
+  const out = (await $.tool.call({ tool: 'AskUserQuestion', questions } as never)) as { context?: string[] }
+  expect(out.context?.at(-1)).toMatch(/předal odpověď oknům „FW na žádost“/)
+  expect(readJson(files, ANSWER('w9'))).toMatchObject({
+    askId: 'd:t:9',
+    text: '1) Jen FW, CRM potom 2) p1',
+    parts: [{ text: 'Jen FW, CRM potom', typed: true }, { text: 'p1', typed: false }],
+  })
+})
+
+test('a window closes its dialog of several questions with the answers picked in Centrála', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  mockEnv(on, clock, { self: 'Okno A', sessions: [], files })
+  on('tool.call', async (_, e) => {
+    if (e.tool === 'AskUserQuestion') await new Promise(() => undefined)
+    return { result: {}, text: 'ok' }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const own = () => readJson<WindowState>(files, STATE('self'))
+  await $.turn.start({ text: 'dál', turnId: 't1' })
+  const opt = (label: string) => ({ label, description: '' })
+  const questions = [
+    { question: 'Schéma?', header: 'S', options: [opt('Ano'), opt('Ne')], multiSelect: false },
+    { question: 'Základ?', header: 'Z', options: [opt('soc1'), opt('p1')], multiSelect: false },
+  ]
+  const dialog = $.tool.call({ tool: 'AskUserQuestion', questions, tool_use_id: 'tu1' } as never) as Promise<{ result?: { answers?: Record<string, string> } }>
+  for (let i = 0; i < 100 && own().phase !== 'dialog'; i++) await clock.advance(10)
+  expect(own().ask?.parts).toEqual([{ text: 'Schéma?', options: ['Ano', 'Ne'] }, { text: 'Základ?', options: ['soc1', 'p1'] }])
+  put(files, ANSWER('self'), { askId: own().ask!.id, text: '1) Ano 2) p1', typed: false, at: NOW, parts: [{ text: 'Ano', typed: false }, { text: 'p1', typed: false }] }, NOW + 1)
+  await clock.advance(3_000)
+  const out = await dialog
+  expect(out.result?.answers).toEqual({ 'Schéma?': 'Ano', 'Základ?': 'p1' })
+  expect(own().phase).toBe('working')
 })
 
 test('a window writes its own state: working, the box it asks, done, a dialog Centrála answers, approvals', { timeoutMs: 30_000 }, async ($, on) => {

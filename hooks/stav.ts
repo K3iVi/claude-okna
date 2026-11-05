@@ -18,7 +18,10 @@ export type Phase = 'working' | 'asks' | 'dialog' | 'approval' | 'done'
 
 // A question the window waits on: `id` names it exactly (its turn and the call that asked), so an
 // answer to an older one is never taken for this one.
-export type Ask = { id: string; text: string; context: string; options: string[] }
+// A dialog of several questions keeps each with its own buttons in `parts` (`text` then joins them,
+// `options` stays empty for readers that know no parts).
+export type AskPart = { text: string; options: string[] }
+export type Ask = { id: string; text: string; context: string; options: string[]; parts?: AskPart[] }
 
 export type WindowState = {
   v: number
@@ -38,8 +41,10 @@ export type WindowState = {
 }
 
 // What Centrála's plugin leaves for a window: your pick in its dialog, for the question `askId`.
-// `typed`: written under "Other", not one of the window's buttons.
-export type Answer = { askId: string; text: string; typed: boolean; at: number }
+// `typed`: written under "Other", not one of the window's buttons. For a question with parts, one
+// answer per part in their order (`text` then joins them).
+export type PartAnswer = { text: string; typed: boolean }
+export type Answer = { askId: string; text: string; typed: boolean; at: number; parts?: PartAnswer[] }
 
 export function parseState(text: string, id: string): WindowState | undefined {
   try {
@@ -57,7 +62,10 @@ const isAsk = (a: unknown): a is Ask =>
   !!a &&
   typeof (a as Ask).id === 'string' &&
   typeof (a as Ask).text === 'string' &&
-  Array.isArray((a as Ask).options)
+  Array.isArray((a as Ask).options) &&
+  ((a as Ask).parts === undefined ||
+    (Array.isArray((a as Ask).parts) &&
+      (a as Ask).parts!.every(p => !!p && typeof p.text === 'string' && Array.isArray(p.options))))
 
 // Whether the file is what the window is doing now: written lately, and the app has seen no turn
 // end since (a hook that failed leaves the file behind; the transcript then decides).
@@ -71,7 +79,14 @@ export function parseAnswer(text: string): Answer | undefined {
   try {
     const a = JSON.parse(text) as Partial<Answer>
     if (typeof a.askId !== 'string' || typeof a.text !== 'string' || !a.text.trim()) return undefined
-    return { askId: a.askId, text: a.text.trim(), typed: a.typed === true, at: typeof a.at === 'number' ? a.at : 0 }
+    const answer: Answer = { askId: a.askId, text: a.text.trim(), typed: a.typed === true, at: typeof a.at === 'number' ? a.at : 0 }
+    if (a.parts !== undefined) {
+      if (!Array.isArray(a.parts)) return undefined
+      const parts = a.parts.map(p => ({ text: typeof p?.text === 'string' ? p.text.trim() : '', typed: p?.typed === true }))
+      if (!parts.length || parts.some(p => !p.text)) return undefined
+      answer.parts = parts
+    }
+    return answer
   } catch {
     return undefined
   }
@@ -82,31 +97,51 @@ export function parseAnswer(text: string): Answer | undefined {
 export function acceptsAnswer(state: WindowState | undefined, answer: Answer): boolean {
   if (!state || (state.phase !== 'asks' && state.phase !== 'dialog') || !state.ask) return false
   if (state.ask.id !== answer.askId) return false
+  const parts = state.ask.parts
+  if (parts?.length) {
+    // Every part answered, each by one of its buttons or in your own words.
+    if (!answer.parts || answer.parts.length !== parts.length) return false
+    return answer.parts.every((a, i) => a.typed || parts[i]!.options.length === 0 || parts[i]!.options.includes(a.text))
+  }
+  if (answer.parts) return false
   return answer.typed || state.ask.options.length === 0 || state.ask.options.includes(answer.text)
 }
+
+// The answer to a question with parts as one text: "1) … 2) …".
+export const joinParts = (texts: readonly string[]) => texts.map((t, i) => `${i + 1}) ${t}`).join(' ')
+
+const optionsOf = (q: { options?: readonly { label?: string }[] }) =>
+  (q.options ?? []).map(o => String(o.label ?? '').trim()).filter(Boolean).slice(0, 4)
 
 type DialogInput = {
   questions?: readonly { question?: string; header?: string; options?: readonly { label?: string }[] }[]
 }
 
-// A dialog's question as Centrála shows it: one question with its options; several as one text
-// (answered then in words).
+// A dialog's question as Centrála shows it: one question with its options; several as parts, each
+// with its own options (Centrála asks them one by one).
 export function askOfDialog(id: string, input: DialogInput): Ask {
   const qs = (input.questions ?? []).filter(q => typeof q.question === 'string' && q.question.trim())
   if (qs.length === 1) {
     const q = qs[0]!
-    const options = (q.options ?? []).map(o => String(o.label ?? '').trim()).filter(Boolean).slice(0, 4)
-    return { id, text: q.question!.trim().slice(0, 400), context: '', options }
+    return { id, text: q.question!.trim().slice(0, 400), context: '', options: optionsOf(q) }
   }
-  const text = qs.map((q, i) => `${i + 1}) ${q.question!.trim()}`).join(' ').slice(0, 400)
-  return { id, text: text || 'Okno se ptá v dialogu.', context: '', options: [] }
+  if (!qs.length) return { id, text: 'Okno se ptá v dialogu.', context: '', options: [] }
+  const parts = qs.map(q => ({ text: q.question!.trim().slice(0, 400), options: optionsOf(q) }))
+  return { id, text: joinParts(parts.map(p => p.text)).slice(0, 400), context: '', options: [], parts }
 }
 
-// The dialog's result for an answer from Centrála: the pick for its one question, words for several.
-export function dialogResult(input: DialogInput, text: string): { questions: unknown; answers: Record<string, string>; response?: string } {
-  const qs = (input.questions ?? []).filter(q => typeof q.question === 'string')
-  if (qs.length === 1) return { questions: input.questions, answers: { [qs[0]!.question!]: text } }
-  return { questions: input.questions, answers: {}, response: text }
+// The dialog's result for an answer from Centrála: the pick for each of its questions; one answer
+// for several questions (from a window that knew no parts) as words.
+export function dialogResult(
+  input: DialogInput,
+  answer: Pick<Answer, 'text' | 'parts'>,
+): { questions: unknown; answers: Record<string, string>; response?: string } {
+  const qs = (input.questions ?? []).filter(q => typeof q.question === 'string' && q.question.trim())
+  if (qs.length === 1) return { questions: input.questions, answers: { [qs[0]!.question!]: answer.text } }
+  if (answer.parts && answer.parts.length === qs.length) {
+    return { questions: input.questions, answers: Object.fromEntries(qs.map((q, i) => [q.question!, answer.parts![i]!.text])) }
+  }
+  return { questions: input.questions, answers: {}, response: answer.text }
 }
 
 type BoxInput = { ask?: unknown; actions?: unknown; recap?: unknown }

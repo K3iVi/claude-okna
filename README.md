@@ -59,7 +59,9 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
 - Okno s pluginem 0.9+ hlásí svůj stav samo (viz níže): Centrála pak vidí i dialog s volbami, který
   okno otevřelo uprostřed práce, a tvou volbu mu doručí plugin — okno ji dostane jako tvoji odpověď
   (do dialogu jako klik, po skončeném tahu jako tvoji zprávu) a vezme ji, jen když se pořád ptá na totéž.
-  Model Centrály v tu chvíli nic neposílá.
+  Model Centrály v tu chvíli nic neposílá. Dialog s víc otázkami (0.9.1+) ukáže Centrála po
+  částech („Název“ (1/2), (2/2)), každou s jejími tlačítky; okno dostane odpovědi až na všechny
+  najednou — „Později“ u kterékoli znamená, že čeká dál.
 - Otázka se v Centrále ukáže, až 10 s trvá: když odpovíš rovnou v okně, Centrála ji vůbec neukáže.
 - Okno, které čeká na schválení nástroje, Centrála jen vypíše; schválit jde jen v okně.
 - Zatím jen okna tohoto PC.

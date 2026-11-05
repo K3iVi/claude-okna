@@ -18,7 +18,7 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
 
 ## Soubory (`%USERPROFILE%\.claude\`)
 - `centrala.json` — fronta, píše ji plugin: `waiting` = otázky (`id`, `title`, `link`, `turn`, `question`,
-  `context`, `options`, `since`, `delivery`), `working` / `unread` / `deferred` = zásoba práce,
+  `context`, `options`, `parts?`, `since`, `delivery`), `working` / `unread` / `deferred` = zásoba práce,
   `approvals` = okna, která čekají na schválení nástroje (jen ukázat; schvaluje se jen v okně).
   `delivery: "plugin"` = okno hlásí svůj stav samo a odpověď mu doručí plugin (viz krok 5).
 - `noc.json` — příznak noci `{"od": ISO, "do": ISO, "okna": ["<id>", …]}`, píšeš ho ty.
@@ -36,6 +36,11 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
      `„<title>“` na začátku pozná, ke kterému oknu odpověď patří; jinak její odeslání odmítne.
    - `options`: tlačítka okna (`options`, nejvýš 3, `label` doslova, `description` „pošle oknu tento text“)
      a „Později“ („nechat čekat“). Bez tlačítek okna: „Odpovím v okně“ a „Později“.
+   - Okno s `parts` (dialog s víc otázkami): **každou část jako samostatnou otázku**, všechny části
+     v tomtéž volání (nevejdou-li se, okno dej do dalšího volání celé): `question` = `„<title>“ (i/n): <part.question>`
+     (i = pořadí části od 1, n = počet částí, text doslova), `header` začátek názvu + ` i/n`,
+     `options` = `part.options` (nejvýš 3) a „Později“. Plugin odpověď předá, jen když jsou zodpovězené
+     všechny části; „Později“ u kterékoli = okno čeká dál.
    - Vlastní text (volba Other) je odpověď, kterou uživatel napsal sám.
    - Vrátí-li dialog, že uživatel neodpověděl a poslal zprávu, **oknům nic neposílej a odpověď nedomýšlej**
      (ani když ze zprávy plyne). Zprávu ber jako pokyn pro sebe. Je-li to příkaz s lomítkem

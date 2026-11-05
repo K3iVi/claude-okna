@@ -15,14 +15,15 @@ import {
   askOfDialog,
   dialogResult,
   isTrusted,
+  joinParts,
   parseAnswer,
   parseState,
   proseTail,
 } from './stav'
-import type { Answer, Ask, Phase, WindowState } from './stav'
+import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.0'
+const PLUGIN_VERSION = '0.9.1'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -477,7 +478,12 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
           } else if (st && (st.phase === 'asks' || st.phase === 'dialog') && st.ask) {
             // The window says what it asks, and that nothing has come since.
             waiting = true
-            question = { text: st.ask.text, context: st.ask.context, options: st.ask.options }
+            question = {
+              text: st.ask.text,
+              context: st.ask.context,
+              options: st.ask.options,
+              ...(st.ask.parts?.length ? { parts: st.ask.parts } : {}),
+            }
             askId = st.ask.id
           } else if (st) {
             // Its turn ended without a question in a box (or was broken off).
@@ -746,6 +752,8 @@ type Question = {
   question: string
   context: string
   options: string[]
+  // A dialog of several questions: each asked on its own („<title>“ (i/n): …) with its own buttons.
+  parts?: { question: string; options: string[] }[]
   since: string
   // Reported by the window itself: answered through its plugin ('plugin'), else by a message.
   askId?: string
@@ -931,17 +939,38 @@ function notePicks(out: unknown) {
   }
 }
 
-type Opened = { question: string; window: Question; labels: string[] }
+// A dialog question of Centrála and the window it names; `part` (1-based) when it asks one part
+// of that window's question („<title>“ (i/n): …).
+type OpenedItem = { question: string; labels: string[]; part?: number }
+type Opened = { window: Question; items: OpenedItem[] }
+
+const partOf = (question: string, title: string): number | undefined => {
+  const rest = question.trimStart().slice(`„${title}“`.length)
+  const m = /^\s*\((\d+)\s*\/\s*(\d+)\)/.exec(rest)
+  return m ? Number(m[1]) : undefined
+}
 
 function openedDialog(input: { questions?: readonly { question?: string; options?: readonly { label?: string }[] }[] }): Opened[] {
-  const out: Opened[] = []
+  const byWindow = new Map<string, Opened>()
   for (const q of input.questions ?? []) {
     const window = typeof q.question === 'string' ? windowOf(q.question) : undefined
     if (!window) continue
-    out.push({ question: q.question!, window, labels: (q.options ?? []).map(o => String(o.label ?? '').trim()) })
+    const item: OpenedItem = {
+      question: q.question!,
+      labels: (q.options ?? []).map(o => String(o.label ?? '').trim()),
+      ...(window.parts?.length ? { part: partOf(q.question!, window.title) } : {}),
+    }
+    const opened = byWindow.get(window.id) ?? { window, items: [] }
+    opened.items.push(item)
+    byWindow.set(window.id, opened)
   }
-  // A window named by two questions of one dialog: which answer counts is not guessed.
-  return out.filter(o => out.filter(x => x.window.id === o.window.id).length === 1)
+  // Which answer counts is never guessed: a window is asked once, or each of its parts exactly once.
+  return [...byWindow.values()].filter(({ window, items }) => {
+    const n = window.parts?.length ?? 0
+    if (!n) return items.length === 1
+    const seen = new Set(items.map(i => i.part))
+    return items.length === n && seen.size === n && [...seen].every(p => p !== undefined && p >= 1 && p <= n)
+  })
 }
 
 // Answers the plugin handed to windows, waiting to be taken: by window, the question and when.
@@ -957,14 +986,31 @@ async function deliverPicks($: EngineInterface, opened: Opened[], out: unknown):
   const result = (out as { result?: { answers?: Record<string, unknown>; afkTimeoutMs?: unknown; followUp?: unknown } } | undefined)?.result
   if (!result || result.afkTimeoutMs !== undefined || result.followUp) return []
   const sent: string[] = []
-  for (const { question, window, labels } of opened) {
-    const raw = result.answers?.[question]
-    if (!window.askId || typeof raw !== 'string') continue
+  // One item's pick: a button of the window (or of its part), or your own words; null for none.
+  const pickOf = (item: OpenedItem, buttons: string[]) => {
+    const raw = result.answers?.[item.question]
+    if (typeof raw !== 'string') return null
     const text = raw.trim()
-    if (!text || /^\[User did not answer/i.test(text)) continue
-    const isButton = window.options.includes(text)
-    if (!isButton && labels.includes(text)) continue
-    const answer: Answer = { askId: window.askId, text, typed: !isButton, at: await $.clock.now() }
+    if (!text || /^\[User did not answer/i.test(text)) return null
+    const isButton = buttons.includes(text)
+    if (!isButton && item.labels.includes(text)) return null
+    return { text, typed: !isButton }
+  }
+  for (const { window, items } of opened) {
+    if (!window.askId) continue
+    let answer: Answer
+    if (window.parts?.length) {
+      // All parts or nothing: „Později“ on one leaves the whole question waiting.
+      const ordered = [...items].sort((a, b) => (a.part ?? 0) - (b.part ?? 0))
+      const picks = ordered.map(item => pickOf(item, window.parts![(item.part ?? 1) - 1]?.options ?? []))
+      if (picks.some(p => p === null)) continue
+      const parts = picks as PartAnswer[]
+      answer = { askId: window.askId, text: joinParts(parts.map(p => p.text)), typed: parts.some(p => p.typed), at: await $.clock.now(), parts }
+    } else {
+      const pick = pickOf(items[0]!, window.options)
+      if (!pick) continue
+      answer = { askId: window.askId, text: pick.text, typed: pick.typed, at: await $.clock.now() }
+    }
     try {
       await $.fs.write(await answerPath($, window.id), JSON.stringify(answer))
       delivered.add(window.id)
@@ -990,6 +1036,9 @@ const toQuestion = (r: Row): Question => ({
   question: r.question?.text || r.snippet,
   context: r.question?.context ?? '',
   options: r.question?.options ?? [],
+  ...(r.askId && r.question?.parts?.length
+    ? { parts: r.question.parts.map(p => ({ question: p.text, options: p.options })) }
+    : {}),
   since: r.lastActivityAt,
   ...(r.askId ? { askId: r.askId } : {}),
   delivery: r.askId ? 'plugin' : 'message',
@@ -1337,7 +1386,7 @@ export const register: Register = on => {
         call.catch(() => undefined)
         const at = new Date(won.answer.at || (await $.clock.now())).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
         return {
-          result: dialogResult(e as never, won.answer.text) as never,
+          result: dialogResult(e as never, won.answer) as never,
           context: [`Odpověď na tento dialog vybral uživatel v okně Centrála (${at}); plugin okna ji sem doručil a dialog zavřel.`],
         }
       } finally {
