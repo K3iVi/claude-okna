@@ -404,16 +404,22 @@ test('Centrála: a new question starts its turn, a reply to a window that has mo
     written[e.path] = e.text
     return { value: undefined }
   })
+  // The dialog answers with `answers` as they were when it opened; `hold` keeps it open until the
+  // clock passes a minute.
+  let answers: Record<string, string> = {}
+  let hold = false
   on('tool.call', async (_, e) => {
-    // A dialog stays open until the test moves the clock past a minute.
     if (e.tool === 'AskUserQuestion') {
-      await clock.sleep(60_000)
-      return { result: {}, text: 'zavřeno' }
+      const given = answers
+      if (hold) await clock.sleep(60_000)
+      return { result: { questions: [], answers: given }, text: 'odpovězeno' }
     }
     const args = e as unknown as { session_id?: string }
     sent.push(String(args.session_id))
     return { result: {}, text: 'odesláno' }
   })
+  const send = async (session_id: string, message: string) =>
+    (await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id, message } as never)) as { deny?: string }
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.advance(10_000)
 
@@ -430,15 +436,18 @@ test('Centrála: a new question starts its turn, a reply to a window that has mo
   await $.turn.start({ text: prompts[0] ?? '', turnId: 't1' })
   await clock.advance(10_000)
   expect(prompts.length).toBe(1)
-
-  // You answer "Rámeček s otázkou" in the window itself; Centrála's reply to it is refused.
+  // In its dialog you pick "Ano" for one window and write your own reply for the other.
+  answers = { '„Rámeček s otázkou“: Nasadit teď?': 'Ano', '„Nová otázka“: Mám to nasadit?': 'Ano, ale až večer' }
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
+  // A reply you did not give that window is refused, even one another window got.
+  expect((await send('fresh', 'Ano')).deny).toMatch(/^Nic neodesláno: tuto odpověď uživatel/)
+  // You answer "Rámeček s otázkou" in the window itself meanwhile: its reply is refused.
   transcripts['22222222-2222-2222-2222-222222222222'] += `\r\n${line({ type: 'user', origin: { kind: 'human' }, message: { content: 'Ráno' } })}`
-  const refused = await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: 'boxed', message: 'Ano' } as never)
-  expect((refused as { deny?: string }).deny).toMatch(/^Nic neodesláno/)
+  expect((await send('boxed', 'Ano')).deny).toMatch(/^Nic neodesláno: okno mezitím/)
   expect(sent).toEqual([])
-  // The window that still asks gets its reply; the night message always goes.
-  await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: 'fresh', message: 'Ano, nasaď' } as never)
-  await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: 'boxed', message: '[noc] Uživatel zapnul noční režim.' } as never)
+  // The window that still asks gets what you wrote for it; the night message always goes.
+  expect((await send('fresh', 'Ano, ale až večer')).deny).toBeUndefined()
+  expect((await send('boxed', '[noc] Uživatel zapnul noční režim.')).deny).toBeUndefined()
   expect(sent).toEqual(['fresh', 'boxed'])
   expect(aborted).toEqual([])
   await $.turn.complete({ turnId: 't1', reason: 'answer', answer: 'Hotovo.', durationMs: 1000, isAborted: false })
@@ -451,6 +460,8 @@ test('Centrála: a new question starts its turn, a reply to a window that has mo
   await $.turn.start({ text: prompts[1] ?? '', turnId: 't2' })
   // Its dialog is open when you answer that window in the window itself: the dialog is dropped
   // and what still waits ("Nová otázka", put to you before) is asked again.
+  hold = true
+  answers = {}
   const dialog = $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
   await clock.settle()
   transcripts['33333333-3333-3333-3333-333333333333'] += `\r\n${line({ type: 'user', origin: { kind: 'human' }, message: { content: 'Ano' } })}`
@@ -460,4 +471,18 @@ test('Centrála: a new question starts its turn, a reply to a window that has mo
   expect(prompts[2]).toMatch(/^\[okna\] Nová otázka z „Nová otázka“\./)
   await clock.advance(60_000)
   await dialog
+  await $.turn.complete({ turnId: 't2', reason: 'aborted', answer: '', durationMs: 1000, isAborted: true })
+
+  // Its next dialog you leave by writing to Centrála instead: that answers no window, and a reply
+  // Centrála guesses from it is refused.
+  hold = false
+  await $.turn.start({ text: prompts[2] ?? '', turnId: 't3' })
+  answers = { '„Nová otázka“: Mám to nasadit?': '[User did not answer this question — they sent a message instead.]' }
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
+  expect((await send('fresh', 'Ano, nasaď')).deny).toMatch(/^Nic neodesláno: tuto odpověď uživatel/)
+  await $.turn.complete({ turnId: 't3', reason: 'answer', answer: 'Nic neodešlo.', durationMs: 1000, isAborted: false })
+  // A reply you dictate in a turn of your own goes, while the window still asks.
+  await $.turn.start({ text: 'Pošli „Nová otázka“: Ano, nasaď', turnId: 't4' })
+  expect((await send('fresh', 'Ano, nasaď')).deny).toBeUndefined()
+  expect(sent).toEqual(['fresh', 'boxed', 'fresh'])
 })

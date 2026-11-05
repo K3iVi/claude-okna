@@ -48,7 +48,10 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
 - Jiný název okna: `"central": "<regulární výraz>"` v `okna.json`.
 - Otevřený dialog v Centrále zmizí, když otázku mezitím vyřešíš přímo v okně (ostatní otázky z něj
   se ukážou znovu). Odpověď do okna, které mezitím pokračovalo, plugin neodešle — ani když se Centrála
-  splete.
+  splete. Neodešle ani odpověď, kterou jsi v dialogu u otázky toho okna nevybral ani nenapsal
+  (Centrála si ji nesmí domyslet); odpověď, kterou Centrále nadiktuješ sám v novém tahu, projde.
+- Příkaz s lomítkem (`/reload-plugins`…) napsaný, když má Centrála otevřený dialog, se nespustí —
+  dojde jako zpráva. Zadej ho, až Centrála doběhne.
 - Centrála sama hlídá ostatní okna (podle svých pravidel, ať mají ostatní okna jakoukoli verzi pluginu)
   a frontu přepisuje každých 10 s; starší fronta znamená, že plugin v Centrále neběží.
 - Zatím jen okna tohoto PC. Otázku, kterou okno klade dialogem s volbami (AskUserQuestion) uprostřed

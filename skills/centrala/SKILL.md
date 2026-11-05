@@ -29,10 +29,16 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
 2. `waiting` prázdné → jeden řádek „Nic nečeká.“ + zásoba (krok 6) a skonči.
 3. Jedno volání `AskUserQuestion`, nejvýš 4 otázky (nejstarší `since` první; zbytek dalším voláním):
    - `header`: začátek názvu okna (max 12 znaků),
-   - `question`: `„<title>“: <question>` (je-li bez kontextu nesrozumitelná, připoj `(<context>)` zkrácený na větu),
+   - `question`: `„<title>“: <question>` — název i otázka doslova z fronty, nic nepřidávej ani neměň
+     (je-li bez kontextu nesrozumitelná, připoj jen `(<context>)` zkrácený na větu). Plugin podle
+     `„<title>“` na začátku pozná, ke kterému oknu odpověď patří; jinak její odeslání odmítne.
    - `options`: tlačítka okna (`options`, nejvýš 3, `label` doslova, `description` „pošle oknu tento text“)
      a „Později“ („nechat čekat“). Bez tlačítek okna: „Odpovím v okně“ a „Později“.
    - Vlastní text (volba Other) je odpověď, kterou uživatel napsal sám.
+   - Vrátí-li dialog, že uživatel neodpověděl a poslal zprávu, **oknům nic neposílej a odpověď nedomýšlej**
+     (ani když ze zprávy plyne). Zprávu ber jako pokyn pro sebe. Je-li to příkaz s lomítkem
+     (např. `/reload-plugins`), napiš: „Příkaz se během dialogu nespustil, zadej ho znovu, až doběhnu.“
+     Plugin odpověď, kterou uživatel v dialogu u otázky toho okna nevybral ani nenapsal, stejně odmítne.
 4. **Před odesláním ověř, že okno pořád čeká:** přečti `centrala.json` znovu (okno musí být v `waiting`
    se stejným `turn`) a zavolej `get_session` (`mcp__ccd_session_mgmt__get_session`) s jeho `id` —
    `isRunning: true` znamená, že mezitím dostalo odpověď jinde. Neplatí-li obojí, nic mu neposílej

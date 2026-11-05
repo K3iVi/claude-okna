@@ -708,6 +708,25 @@ let current: Question[] = []
 let centralTurn: string | undefined
 let shown = new Map<string, string>()
 let inDialog = false
+// What you chose or typed in this turn's dialogs, by the window each question named; whether the
+// turn opened a dialog at all. A reply to a waiting window must be one of them.
+let picks = new Map<string, Set<string>>()
+let askedThisTurn = false
+
+// Your answers in a dialog of Centrála, by the window each question names („<title>“ first).
+// "You sent a message instead" answers nothing.
+function notePicks(out: unknown) {
+  const answers = (out as { result?: { answers?: Record<string, unknown> } } | undefined)?.result?.answers ?? {}
+  for (const [question, answer] of Object.entries(answers)) {
+    if (typeof answer !== 'string' || !answer.trim() || /^\s*\[User did not answer/i.test(answer)) continue
+    for (const q of current) {
+      if (!question.trimStart().startsWith(`„${q.title}“`)) continue
+      const set = picks.get(q.id) ?? new Set<string>()
+      set.add(answer.trim())
+      picks.set(q.id, set)
+    }
+  }
+}
 // The questions put to you, by window: the turn whose question it was. Kept while the window
 // is on that turn or working (a compact is no answer), dropped once it replies anew or is gone.
 const ANNOUNCED = 'central-announced-v2'
@@ -745,14 +764,18 @@ async function stillAsks($: EngineInterface, id: string, turn: string): Promise<
   }
 }
 
-// Before Centrála sends a window its reply: a question it was shown must still be asked, or the
-// send is refused (the reply would land in a window that has moved on). Other sends — the night
-// message, a message you dictate — are yours and pass. Undefined: send; else why not.
+// Before Centrála sends a window that waits its reply: in a turn the plugin began or one that put
+// a dialog to you, the reply must be what you chose or typed there for that window, and the window
+// must still ask (else the reply would land in a window that has moved on). The night message
+// and a reply you dictate in a turn of your own pass. Undefined: send; else why not.
 async function refuseSend($: EngineInterface, to: string, text: string): Promise<string | undefined> {
   if (!(await isCentral($))) return undefined
   if (/^\s*\[noc\]/.test(text)) return undefined
   const turn = shown.get(to) ?? current.find(q => q.id === to)?.turn
   if (!turn) return undefined
+  if ((centralTurn || askedThisTurn) && !picks.get(to)?.has(text.trim())) {
+    return 'Nic neodesláno: tuto odpověď uživatel v dialogu u otázky tohoto okna nevybral ani nenapsal (otázka v dialogu musí začínat „<název okna>“). Napiš mu, že oknu nic neodešlo. Odpověď nedomýšlej; chce-li ji poslat, vybere ji v dialogu nebo ji napíše sám v novém tahu.'
+  }
   const verdict = await stillAsks($, to, turn)
   shown.delete(to)
   if (verdict === 'yes') return undefined
@@ -977,6 +1000,8 @@ export const register: Register = on => {
   // as it is now, so what it holds counts as put to you.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined && (await isCentral($))) {
+      picks = new Map()
+      askedThisTurn = false
       if (/\[okna\]|centrala/i.test(e.text)) {
         promptedAt = 0
         centralTurn = e.turnId
@@ -995,11 +1020,16 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Centrála's dialog: open while it waits on you (a stale one is dropped); what you answer in it
+  // is what its replies to the windows may say.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    if (!centralTurn) return next(e)
-    inDialog = true
+    if (!(await isCentral($))) return next(e)
+    askedThisTurn = true
+    inDialog = centralTurn !== undefined
     try {
-      return await next(e)
+      const out = await next(e)
+      notePicks(out)
+      return out
     } finally {
       inDialog = false
     }
@@ -1018,6 +1048,10 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      picks = new Map()
+      askedThisTurn = false
+    }
     if (e.turnId === centralTurn) {
       // The turn died before you saw its questions: they are put to you again.
       if (e.reason === 'error' || e.reason === 'refusal') {
