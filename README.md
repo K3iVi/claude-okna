@@ -6,6 +6,8 @@ Kliknutím na řádek se okno otevře.
 
 *English summary at the bottom.*
 
+![Panel Okna (ukázková data)](docs/panel.png)
+
 ## Proč
 
 Když běží deset a víc oken najednou, snadno se ztratí to jedno, které už půl hodiny čeká na „ano/ne“.
