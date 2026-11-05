@@ -24,6 +24,8 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
 
 ## Otázky (výchozí postup)
 1. Přečti `centrala.json`. Chybí → napiš, ať je okno pojmenované „Centrála“ a plugin okna zapnutý, a skonči.
+   Je `at` starší než 1 minuta → plugin v tomto okně neběží (nebo je starší verze): napiš „Fronta je stará,
+   dej /reload-plugins“ a skonči; otázky z ní neukazuj.
 2. `waiting` prázdné → jeden řádek „Nic nečeká.“ + zásoba (krok 6) a skonči.
 3. Jedno volání `AskUserQuestion`, nejvýš 4 otázky (nejstarší `since` první; zbytek dalším voláním):
    - `header`: začátek názvu okna (max 12 znaků),
@@ -31,8 +33,13 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    - `options`: tlačítka okna (`options`, nejvýš 3, `label` doslova, `description` „pošle oknu tento text“)
      a „Později“ („nechat čekat“). Bez tlačítek okna: „Odpovím v okně“ a „Později“.
    - Vlastní text (volba Other) je odpověď, kterou uživatel napsal sám.
-4. **Před odesláním přečti `centrala.json` znovu.** Okno, které už v `waiting` není nebo má jiné `turn`,
-   mezitím odpověď dostalo: nic mu neposílej, napiš „„<title>“ už vyřízeno v okně“.
+4. **Před odesláním ověř, že okno pořád čeká:** přečti `centrala.json` znovu (okno musí být v `waiting`
+   se stejným `turn`) a zavolej `get_session` (`mcp__ccd_session_mgmt__get_session`) s jeho `id` —
+   `isRunning: true` znamená, že mezitím dostalo odpověď jinde. Neplatí-li obojí, nic mu neposílej
+   a napiš „„<title>“ už vyřízeno v okně“.
+   Plugin to hlídá i sám: odeslání do okna, které mezitím pokračovalo, odmítne („Nic neodesláno: …“).
+   Pak napiš „„<title>“ už vyřízeno v okně“ a nic dalšího mu neposílej — znovu to nezkoušej.
+   Zmizí-li ti otevřený dialog (tah přerušen), nic nedělej: plugin otázky, které dál čekají, ukáže novým tahem.
 5. Za každou platnou odpověď:
    - tlačítko okna nebo vlastní text → `send_message` (`mcp__ccd_session_mgmt__send_message`, načti přes
      ToolSearch) s `session_id` = `id` a `message` = přesně ten text;
@@ -43,8 +50,7 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    Co dál čeká, ukáže plugin sám dalším tahem; vypsat smíš jen to, co je v právě přečteném `centrala.json`.
 
 ## „noc“ (uživatel napíše „noc“, případně „noc do 8:00“)
-1. Přečti `centrala.json`. Cíl = okna z `working` a `waiting` (podle `link`/`id`; u `working` vezmi `id`
-   z odkazu `link`, pokud tam není, přes `list_sessions`).
+1. Přečti `centrala.json`. Cíl = okna z `working` a `waiting` (každé má `id`).
 2. Zapiš `noc.json`: `od` = teď, `do` = nejbližší 7:00 místního času (nebo čas z pokynu) jako ISO s posunem,
    `okna` = id cílů. Do `noc-zaznam.md` připiš nadpis `## Noc <datum>`.
 3. Každému cíli `set_session_permission_mode` → `auto` (načti přes ToolSearch; uživatel každé schválí;

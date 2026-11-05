@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'claude-code'
 
 import type { RemotePc, Row } from '../types'
-import { questionFromTail } from './transcript'
-import type { Question } from './transcript'
+import { startsAnyTurn, turnEnding } from './transcript'
+import type { BoxQuestion, TurnEnding } from './transcript'
 
 const PANE = 'okna'
 const TITLE = 'Okna'
@@ -52,6 +52,21 @@ type Session = {
   remoteControlActive?: boolean
 }
 
+// How a window's last turn ended, by its last reply (`key`, lastAssistantUuid): 'replied' with its
+// box's question (`ask`), whether it closed on a box at all and the prose guess; 'answered' when
+// something came after it; 'unknown' (read at `at`) when the transcript did not show it yet.
+type Ending = {
+  key: string
+  state: 'replied' | 'answered' | 'unknown'
+  ask: BoxQuestion | null
+  boxed: boolean
+  guess: { waiting: boolean; snippet: string }
+  at?: number
+  // The sizes of the transcripts it was read from: one that grew is read again.
+  mark?: string
+}
+const UNKNOWN_RETRY_MS = 60_000
+// The prose guess for a window without a record, by reply time.
 type Verdict = { at: string; waiting: boolean; snippet: string }
 
 // One poll serves every window: the window that polls leaves the result in the
@@ -63,7 +78,7 @@ type Snapshot = { at: number; rows: Row[]; info: string; remote?: RemotePc[]; sy
 // moves the window's times but not its reply, so neither counts as work.
 type Replies = Record<string, { turn: string; at: number }>
 
-let isRefreshing = false
+let inFlight: { force: boolean; done: Promise<Row[] | undefined> } | undefined
 
 // This window's own id and title; '' until known.
 let selfId = ''
@@ -151,6 +166,8 @@ type AppRecord = {
   bridgeSessionIds?: string[]
   // The CLI session behind the window and the folders it ran in: they name its transcript folder.
   cliSessionId?: string
+  // The CLI session of the last reply: after /clear or a resume the transcript goes on in a new file.
+  lastAssistantCliSessionId?: string
   cwd?: string
   originCwd?: string
 }
@@ -162,13 +179,20 @@ const BACKGROUND_MS = 90_000
 
 let projectsDir: string | undefined
 
+// The window's CLI sessions, the current one first, each with the project folders it may sit in.
+// The CLI names a project's folder after its path, every character but letters and digits a dash.
+function cliFiles(record: AppRecord): { folder: string; cli: string }[] {
+  const clis = [...new Set([record.lastAssistantCliSessionId, record.cliSessionId])].filter((c): c is string => !!c && UUID.test(c))
+  const folders = [...new Set([record.cwd, record.originCwd].filter((c): c is string => !!c))].map(c => c.replace(/[^A-Za-z0-9]/g, '-'))
+  return clis.flatMap(cli => folders.map(folder => ({ folder, cli })))
+}
+
 async function worksInBackground($: EngineInterface, record: AppRecord | undefined, now: number): Promise<boolean> {
-  if (!record?.cliSessionId) return false
+  if (!record) return false
   try {
     projectsDir ??= `${await envVar($, 'USERPROFILE')}/.claude/projects`
-    // The CLI names a project's folder after its path, every character but letters and digits a dash.
-    for (const cwd of new Set([record.cwd, record.originCwd].filter((c): c is string => !!c))) {
-      const dir = `${projectsDir}/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${record.cliSessionId}/subagents`
+    for (const { folder, cli } of cliFiles(record)) {
+      const dir = `${projectsDir}/${folder}/${cli}/subagents`
       if (!(await $.fs.exists(dir))) continue
       if ((await $.fs.list(dir)).some(f => f.name.endsWith('.jsonl') && now - f.mtimeMs < BACKGROUND_MS)) return true
     }
@@ -320,17 +344,35 @@ async function exchange($: EngineInterface, rows: Row[]): Promise<RemotePc[]> {
     }))
 }
 
-async function refresh($: EngineInterface, force = false) {
-    if (isRefreshing) return
-    // The central window polls with its pane closed too: it is told of each new question.
-    if (!(await $.ui.panes()).some(pane => pane.id === PANE) && !(await isCentral($))) return
-    isRefreshing = true
+// One poll at a time: two at once would read every transcript twice. A poll asked for while one
+// runs gets that one's rows; a forced one (by this version's rules, not the shared snapshot)
+// runs again after an ordinary one.
+async function refresh($: EngineInterface, force = false): Promise<Row[] | undefined> {
+  while (inFlight) {
+    const running = inFlight
+    const rows = await running.done
+    if (running.force || !force) return rows
+  }
+  const done: Promise<Row[] | undefined> = poll($, force).finally(() => {
+    if (inFlight?.done === done) inFlight = undefined
+  })
+  inFlight = { force, done }
+  return done
+}
+
+async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefined> {
     try {
+      // The central window polls with its pane closed too: it is told of each new question.
+      if (!(await $.ui.panes()).some(pane => pane.id === PANE) && !(await isCentral($))) return
       // The folded sections as last opened or closed in any window.
       const open = (await $.store.get('open')) as Record<string, boolean> | undefined
       if (open) await update($, openAtom, () => open)
       const snapshot = (await $.store.get('snapshot')) as Snapshot | undefined
-      if (!force && snapshot && (await $.clock.now()) - snapshot.at < POLL_MS - 2_000) {
+      // Fresh, or another window is polling right now: draw what the store has.
+      const polling = ((await $.store.get('polling')) as number | undefined) ?? 0
+      const nowAtStart = await $.clock.now()
+      const isFresh = snapshot && nowAtStart - snapshot.at < POLL_MS - 2_000
+      if (!force && snapshot && (isFresh || nowAtStart - polling < POLL_MS - 2_000)) {
         if (!selfId) await findSelf($)
         await update($, rowsAtom, () => notSelf(snapshot.rows))
         await update($, infoAtom, () => snapshot.info)
@@ -338,7 +380,9 @@ async function refresh($: EngineInterface, force = false) {
         await update($, syncAtom, () => snapshot.sync ?? '')
         return
       }
-      await $.store.set('snapshot', { ...(snapshot ?? { rows: [], info: '' }), at: await $.clock.now() })
+      // A lock, not a result: a failed poll leaves the snapshot stale, so the next window polls again.
+      await $.store.set('polling', nowAtStart)
+      tailReads = 0
       const listed = await $.mcp.call(SESSIONS, 'list_sessions', { limit: 40 })
       if (listed.isError) {
         await update($, infoAtom, () => `Seznam oken nejde načíst: ${textOf(listed).slice(0, 200)}`)
@@ -353,6 +397,7 @@ async function refresh($: EngineInterface, force = false) {
 
       const dirs = await findRecordDirs($)
       const verdicts = ((await $.store.get('verdicts-v3')) as Record<string, Verdict> | undefined) ?? {}
+      const endings = ((await $.store.get('endings-v5')) as Record<string, Ending> | undefined) ?? {}
       // Windows you hid, by the activity they had then: new activity brings them back.
       const hidden = ((await $.store.get('hidden')) as Record<string, string> | undefined) ?? {}
       const deferred = ((await $.store.get('deferred')) as Deferred | undefined) ?? {}
@@ -374,31 +419,52 @@ async function refresh($: EngineInterface, force = false) {
         if (hidden[s.sessionId] === act) continue
         let waiting = false
         let snippet = ''
-        const summary = record?.postTurnSummary
-        if (summary?.status_category && summary.summarizes_uuid === record?.lastAssistantUuid) {
-          // The app's verdict on the window's last turn, the one its sidebar goes by.
-          waiting = summary.status_category === 'blocked'
-          snippet = waiting ? summary.needs_action || summary.status_detail || '' : ''
-        } else if (!s.isRunning) {
-          // No record of the box: guess from the transcript's closing lines.
-          if (verdicts[s.sessionId]?.at !== act) {
-            const events = await $.mcp.call(SESSIONS, 'list_events', { session_id: s.sessionId, limit: 8 })
-            const transcript = events.isError ? '' : textOf(events)
-            // A turn closing on the wrap-up box with no message after it asks in the box.
-            const endsInBox = /\[assistant\] \(called mcp__ccd_turn__wrap_up\)\s*(\n\[result\][^\n]*\s*)?$/.test(transcript)
-            const verdict = endsInBox
-              ? { waiting: true, snippet: 'Otázka je v rámečku „Další krok“ v okně' }
-              : classify(lastAssistantText(transcript))
-            verdicts[s.sessionId] = { at: act, ...verdict }
+        let question: BoxQuestion | undefined
+        if (!s.isRunning) {
+          // How the last turn closed, from the window's own transcript (read once per reply), and the
+          // app's verdict on it (the one its sidebar goes by; often never written). A row with a
+          // `question` is one Centrála may show: the box, the app or the window's own last words say so.
+          const ending = await endingOf($, record, turn, endings, s.sessionId)
+          const summary = record?.postTurnSummary
+          const fits = !!summary?.status_category && summary.summarizes_uuid === record?.lastAssistantUuid
+          const blocked = fits && summary?.status_category === 'blocked'
+          const fallback = 'Okno čeká na tvou odpověď.'
+          if (ending?.state === 'answered') {
+            // Something came after its last reply: on its way, nothing it asked waits.
+          } else if (ending?.state === 'replied' && ending.ask) {
+            waiting = true
+            question = ending.ask
+          } else if (blocked) {
+            waiting = true
+            question = { text: summary?.needs_action || summary?.status_detail || fallback, context: '', options: [] }
+          } else if (fits || (ending?.state === 'replied' && ending.boxed)) {
+            // The app or the window's own box says nothing waits.
+          } else if (ending?.state === 'replied') {
+            // Neither says: guess from the window's closing words.
+            waiting = ending.guess.waiting
+            if (waiting) question = { text: ending.guess.snippet || fallback, context: '', options: [] }
+          } else {
+            // No transcript to read: guess from the closing lines the app renders.
+            if (verdicts[s.sessionId]?.at !== act) {
+              const events = await $.mcp.call(SESSIONS, 'list_events', { session_id: s.sessionId, limit: 8 })
+              const transcript = events.isError ? '' : textOf(events)
+              const endsInBox = /\[assistant\] \(called mcp__ccd_turn__wrap_up\)\s*(\n\[result\][^\n]*\s*)?$/.test(transcript)
+              const verdict = endsInBox
+                ? { waiting: true, snippet: 'Otázka je v rámečku „Další krok“ v okně' }
+                : classify(lastAssistantText(transcript))
+              verdicts[s.sessionId] = { at: act, ...verdict }
+            }
+            waiting = verdicts[s.sessionId]?.waiting ?? false
+            snippet = verdicts[s.sessionId]?.snippet ?? ''
           }
-          waiting = verdicts[s.sessionId]?.waiting ?? false
-          snippet = verdicts[s.sessionId]?.snippet ?? ''
+          if (question) snippet = question.text
         }
         // Seen since the reply and left a day: you have decided it can wait.
         const seen = record?.lastFocusedAt !== undefined && record.lastFocusedAt > repliedAt
         if (waiting && seen && now - repliedAt > WAIT_EXPIRE_MS) {
           waiting = false
           snippet = ''
+          question = undefined
         }
         // Unread: a reply since you last had the window in front (a compact is not one).
         const unread = !s.isRunning && record?.lastFocusedAt !== undefined && !seen
@@ -418,6 +484,7 @@ async function refresh($: EngineInterface, force = false) {
           lastActivityAt: act,
           waiting: !s.isRunning && waiting,
           snippet,
+          ...(question && waiting && !s.isRunning ? { question } : {}),
           unread: unread && !background,
           rc: s.remoteControlActive ?? false,
           rcLink: RC_LINK.test(rcLink) ? rcLink : '',
@@ -425,6 +492,7 @@ async function refresh($: EngineInterface, force = false) {
       }
       const live = new Set(sessions.map(s => s.sessionId))
       await $.store.set('verdicts-v3', Object.fromEntries(Object.entries(verdicts).filter(([id]) => live.has(id))))
+      await $.store.set('endings-v5', Object.fromEntries(Object.entries(endings).filter(([id]) => live.has(id))))
       await $.store.set('replies', Object.fromEntries(Object.entries(replies).filter(([id]) => live.has(id))))
       // Read again: a click to hide or defer while this poll ran must not be lost.
       const hiddenNow = ((await $.store.get('hidden')) as Record<string, string> | undefined) ?? {}
@@ -460,46 +528,162 @@ async function refresh($: EngineInterface, force = false) {
       await update($, remoteAtom, () => remote)
       await update($, syncAtom, () => sync)
       await $.store.set('snapshot', { at: await $.clock.now(), rows, info: '', remote, sync })
+      return rows
     } catch (error) {
       await update($, infoAtom, () => `Chyba: ${String(error).slice(0, 200)}`)
-    } finally {
-      isRefreshing = false
     }
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// The last lines of the window's transcript, ~/.claude/projects/<folder>/<cliSessionId>.jsonl.
-// Transcripts run to 100+ MB, so PowerShell reads only the tail.
-async function transcriptTail($: EngineInterface, record: AppRecord): Promise<string[]> {
-  if (!record.cliSessionId || !UUID.test(record.cliSessionId)) return []
-  projectsDir ??= `${await envVar($, 'USERPROFILE')}/.claude/projects`
-  for (const cwd of new Set([record.cwd, record.originCwd].filter((c): c is string => !!c))) {
-    const path = `${projectsDir}/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${record.cliSessionId}.jsonl`
-    if (!(await $.fs.exists(path))) continue
-    const { stdout } = await $.process.run([
-      'powershell',
-      '-NoProfile',
-      '-Command',
-      `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Content -LiteralPath '${path.replace(/'/g, "''")}' -Tail 80 -Encoding UTF8`,
-    ])
-    return stdout.split(/\r?\n/)
+// Reads the last 80 lines of a transcript. A line over 200 kB (a screenshot, a pasted image) is
+// cut to what the reading needs: a prompt's origin and whether it is a tool's result; a reply's uuid.
+const TAIL_SCRIPT = [
+  '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+  'Get-Content -LiteralPath $Path -Tail 80 -Encoding UTF8 | ForEach-Object {',
+  '  if ($_.Length -le 200000) { return $_ }',
+  '  $h = $_.Substring(0, 600)',
+  '  $t = $_.Substring($_.Length - 3000)',
+  `  if ($h.Contains('"type":"user","message"')) {`,
+  `    $o = [regex]::Match($t, '"origin":\\{"kind":"([a-z-]+)"').Groups[1].Value`,
+  `    $m = if ($t.Contains('"isMeta":true')) { 'true' } else { 'false' }`,
+  `    $c = if ($h.Contains('"tool_use_id"')) { '[{"type":"tool_result"}]' } else { '[{"type":"text","text":"[...]"}]' }`,
+  `    $g = if ($o) { ',"origin":{"kind":"' + $o + '"}' } else { '' }`,
+  `    return '{"type":"user","isMeta":' + $m + $g + ',"message":{"content":' + $c + '}}'`,
+  '  }',
+  `  if ($t.Contains('"type":"assistant"')) {`,
+  `    $u = [regex]::Match($t, '"uuid":"([0-9a-f-]{36})"').Groups[1].Value`,
+  `    return '{"type":"assistant","huge":true,"uuid":"' + $u + '","message":{"content":[]}}'`,
+  '  }',
+  '}',
+].join('\n')
+
+// PowerShell's -EncodedCommand: the script as UTF-16LE in base64, so no quoting can break it.
+function encodedCommand(script: string): string {
+  const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  for (let i = 0; i < script.length; i++) {
+    const c = script.charCodeAt(i)
+    bytes.push(c & 0xff, c >> 8)
   }
-  return []
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const [a = 0, b = 0, c = 0] = [bytes[i], bytes[i + 1], bytes[i + 2]]
+    const n = (a << 16) | (b << 8) | c
+    out += abc[(n >> 18) & 63]! + abc[(n >> 12) & 63]! + (i + 1 < bytes.length ? abc[(n >> 6) & 63]! : '=') + (i + 2 < bytes.length ? abc[n & 63]! : '=')
+  }
+  return out
 }
 
-type Queue = {
-  at: string
-  waiting: Question[]
-  working: { title: string; link: string; since: string }[]
-  unread: { title: string; link: string; since: string }[]
-  deferred: { title: string; link: string; since: string }[]
+// The last lines of one of the window's transcripts (~/.claude/projects/<folder>/<cli>.jsonl).
+// Transcripts run to 500+ MB, so PowerShell reads only the tail.
+// Undefined when there is none or the output was cut: nothing to go by.
+async function transcriptTail($: EngineInterface, record: AppRecord, cli: string): Promise<string[] | undefined> {
+  const path = await transcriptPath($, record, cli)
+  if (path) {
+    tailReads++
+    const script = `$Path = '${path.replace(/'/g, "''")}'\n${TAIL_SCRIPT}`
+    const run = await $.process.run(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand(script)])
+    if (run.exitCode !== 0 || run.isStdoutTruncated) return undefined
+    return run.stdout.split(/\r?\n/)
+  }
+  return undefined
 }
+
+async function transcriptPath($: EngineInterface, record: AppRecord, cli: string): Promise<string | undefined> {
+  projectsDir ??= `${await envVar($, 'USERPROFILE')}/.claude/projects`
+  for (const file of cliFiles(record).filter(f => f.cli === cli)) {
+    const path = `${projectsDir}/${file.folder}/${file.cli}.jsonl`
+    if (await $.fs.exists(path)) return path
+  }
+  return undefined
+}
+
+// The sizes of the window's transcripts, cheap to take: a reading of them holds while they stay.
+async function transcriptMark($: EngineInterface, record: AppRecord): Promise<string> {
+  const sizes: string[] = []
+  for (const cli of new Set([record.lastAssistantCliSessionId || record.cliSessionId, record.cliSessionId])) {
+    const path = cli ? await transcriptPath($, record, cli) : undefined
+    sizes.push(path ? String((await $.fs.stat(path).catch(() => undefined))?.size ?? '?') : '-')
+  }
+  return sizes.join(':')
+}
+
+// How the window's turn of its last reply `turn` ended. After /clear the window goes on in a new
+// CLI session: anything that starts a turn there means you have moved on from that reply.
+async function readTurn($: EngineInterface, record: AppRecord, turn: string): Promise<TurnEnding> {
+  const last = record.lastAssistantCliSessionId || record.cliSessionId
+  try {
+    if (record.cliSessionId && last && record.cliSessionId !== last) {
+      const newer = await transcriptTail($, record, record.cliSessionId)
+      if (newer && startsAnyTurn(newer)) return { state: 'answered' }
+    }
+    const tail = last ? await transcriptTail($, record, last) : undefined
+    return tail ? turnEnding(tail, turn) : { state: 'unknown' }
+  } catch {
+    return { state: 'unknown' }
+  }
+}
+
+// Transcripts read per poll: the first poll after a load has every window to read, ~1 s each.
+const TAIL_READS_PER_POLL = 6
+let tailReads = 0
+
+// How the window's last turn ended (see turnEnding), kept per window for its last reply.
+// Undefined while unknown: nothing in the transcript to go by yet.
+async function endingOf(
+  $: EngineInterface,
+  record: AppRecord | undefined,
+  turn: string,
+  endings: Record<string, Ending>,
+  id: string,
+): Promise<Ending | undefined> {
+  if (!record || !turn) return undefined
+  const now = await $.clock.now()
+  const cached = endings[id]
+  // An idle window can move on without a new reply (a prompt you broke off, a message that did
+  // not run): a reply read as asking holds only while its transcripts stay as they were read.
+  const known = cached?.key === turn && cached.state === 'replied' ? cached : undefined
+  const mark = known ? await transcriptMark($, record) : undefined
+  if (cached?.key === turn) {
+    if (cached.state === 'answered' || (known && known.mark === mark)) return cached
+    if (cached.state === 'unknown' && now - (cached.at ?? 0) < UNKNOWN_RETRY_MS) return undefined
+  }
+  // Out of reads this poll: a grown transcript's old reading stands until the next one.
+  if (tailReads >= TAIL_READS_PER_POLL) return known
+  const before = mark ?? (await transcriptMark($, record))
+  const read = await readTurn($, record, turn)
+  if (read.state === 'unknown') {
+    endings[id] = { key: turn, state: 'unknown', ask: null, boxed: false, guess: { waiting: false, snippet: '' }, at: now }
+    return undefined
+  }
+  const ending: Ending =
+    read.state === 'answered'
+      ? { key: turn, state: 'answered', ask: null, boxed: false, guess: { waiting: false, snippet: '' } }
+      : { key: turn, state: 'replied', ask: read.box?.ask ?? null, boxed: read.box !== null, guess: classify(read.prose), mark: before }
+  endings[id] = ending
+  return ending
+}
+
+// A question as the central window shows it: the window's own question and the replies its
+// buttons send (none when it asked in prose).
+type Question = {
+  id: string
+  title: string
+  link: string
+  turn: string
+  question: string
+  context: string
+  options: string[]
+  since: string
+}
+type Brief = { id: string; title: string; link: string; since: string }
+type Night = { od: string; do: string }
 
 let home: string | undefined
 const homeDir = async ($: EngineInterface) => (home ??= await envVar($, 'USERPROFILE'))
 
-async function readNight($: EngineInterface): Promise<{ od: string; do: string } | undefined> {
+async function readNight($: EngineInterface): Promise<Night | undefined> {
   try {
     const path = `${await homeDir($)}/${NIGHT_FILE}`
     if (!(await $.fs.exists(path))) return undefined
@@ -513,91 +697,163 @@ async function readNight($: EngineInterface): Promise<{ od: string; do: string }
 }
 
 let isCentralTicking = false
-// A prompt to the central window is waiting for its turn: one is enough, it reads the whole queue.
-let centralPrompted = false
-let queueText = ''
-// The central turn a prompt of this plugin started, and the questions it was shown (id + turn):
-// once one of them is answered in its own window, that turn's dialog is stale.
+// When a prompt to the central window went out whose turn has not begun yet; 0 when none.
+// One is enough: the turn reads the whole queue. One that never starts a turn is sent again.
+let promptedAt = 0
+const PROMPT_RETRY_MS = 10 * 60_000
+// The questions waiting now.
+let current: Question[] = []
+// The central turn a prompt of this plugin (or /centrala) began; the questions it began with, by
+// window and turn (a window drops out once its reply is sent); whether its dialog is open.
 let centralTurn: string | undefined
-let shown: string[] = []
-const keyOf = (q: Question) => `${q.id}:${q.turn}`
+let shown = new Map<string, string>()
+let inDialog = false
+// The questions put to you, by window: the turn whose question it was. Kept while the window
+// is on that turn or working (a compact is no answer), dropped once it replies anew or is gone.
+const ANNOUNCED = 'central-announced-v2'
 
-// In the central window: keeps QUEUE_FILE up to date and, when a window asks something new,
-// starts a turn there. Asking costs nothing in the asking windows and one turn here per question.
+const toQuestion = (r: Row): Question => ({
+  id: r.id,
+  title: r.title,
+  link: r.link,
+  turn: r.turn,
+  question: r.question?.text || r.snippet,
+  context: r.question?.context ?? '',
+  options: r.question?.options ?? [],
+  since: r.lastActivityAt,
+})
+const brief = (r: Row): Brief => ({ id: r.id, title: r.title, link: r.link, since: r.lastActivityAt })
+
+// Whether the window still waits on the question of its reply `turn`, asked of the window itself:
+// 'no' once it replied anew or something came after that reply (you answered it there, another
+// session did), 'unknown' while working with no transcript to tell (a compact or an answer).
+async function stillAsks($: EngineInterface, id: string, turn: string): Promise<'yes' | 'no' | 'unknown'> {
+  try {
+    const res = await $.mcp.call(SESSIONS, 'get_session', { session_id: id })
+    if (res.isError) return 'unknown'
+    const session = JSON.parse(textOf(res)) as Session
+    if (session.isArchived) return 'no'
+    const record = await readRecord($, await findRecordDirs($), id)
+    if (!record) return 'unknown'
+    if (record.lastAssistantUuid !== turn) return 'no'
+    const read = await readTurn($, record, turn)
+    if (read.state === 'answered') return 'no'
+    if (read.state === 'replied') return 'yes'
+    return session.isRunning ? 'unknown' : 'yes'
+  } catch {
+    return 'unknown'
+  }
+}
+
+// Before Centrála sends a window its reply: a question it was shown must still be asked, or the
+// send is refused (the reply would land in a window that has moved on). Other sends — the night
+// message, a message you dictate — are yours and pass. Undefined: send; else why not.
+async function refuseSend($: EngineInterface, to: string, text: string): Promise<string | undefined> {
+  if (!(await isCentral($))) return undefined
+  if (/^\s*\[noc\]/.test(text)) return undefined
+  const turn = shown.get(to) ?? current.find(q => q.id === to)?.turn
+  if (!turn) return undefined
+  const verdict = await stillAsks($, to, turn)
+  shown.delete(to)
+  if (verdict === 'yes') return undefined
+  return 'Nic neodesláno: okno mezitím dostalo odpověď jinde nebo už pracuje dál. Napiš uživateli „už vyřízeno v okně“ a nic dalšího mu neposílej.'
+}
+
+function promptCentral($: EngineInterface, now: number, text: string) {
+  promptedAt = now
+  void $.prompt.submit({ text }).then(
+    r => {
+      if (r.drop !== undefined) promptedAt = 0
+    },
+    () => {
+      promptedAt = 0
+    },
+  )
+}
+
+// In the central window: polls (by this version's rules, whatever plugin the other windows still
+// run), keeps QUEUE_FILE up to date and, when a window asks something new, starts a turn here.
+// Only questions the window's box, the app or the window's own last words ask are put to you.
 async function centralTick($: EngineInterface) {
-  if (isCentralTicking || !(await isCentral($))) return
+  if (isCentralTicking) return
   isCentralTicking = true
   try {
-    const snapshot = (await $.store.get('snapshot')) as Snapshot | undefined
-    if (!snapshot) return
-    const rows = notSelf(snapshot.rows)
-    const known = ((await $.store.get('central-questions')) as Record<string, Question> | undefined) ?? {}
-    const dirs = await findRecordDirs($)
-    const waiting: Question[] = []
-    for (const r of rows) {
-      if (!r.waiting || r.deferred || !r.turn) continue
-      let q = known[r.id]?.turn === r.turn ? known[r.id] : undefined
-      if (!q) {
-        const record = await readRecord($, dirs, r.id)
-        let found: ReturnType<typeof questionFromTail>
-        try {
-          found = record ? questionFromTail(await transcriptTail($, record)) : undefined
-        } catch {
-          found = undefined
-        }
-        q = {
-          id: r.id,
-          title: r.title,
-          link: r.link,
-          turn: r.turn,
-          question: found?.question || r.snippet || 'Okno čeká na tvou odpověď.',
-          context: found?.context ?? '',
-          options: found?.options ?? [],
-          since: r.lastActivityAt,
+    const polled = await refresh($, true)
+    if (!polled) return
+    const rows = notSelf(polled)
+    const byId = new Map(rows.map(r => [r.id, r]))
+    const waiting = rows
+      .filter(r => r.waiting && !r.deferred && r.turn && r.question)
+      .map(toQuestion)
+      .sort((a, b) => Date.parse(a.since) - Date.parse(b.since))
+    current = waiting
+    const night = (await readNight($)) ?? null
+    const now = await $.clock.now()
+    // Written each tick: `at` says the queue is live.
+    await $.fs.write(
+      `${await homeDir($)}/${QUEUE_FILE}`,
+      JSON.stringify(
+        {
+          at: new Date(now).toISOString(),
+          night,
+          waiting,
+          working: rows.filter(r => r.isRunning).map(brief),
+          unread: rows.filter(r => r.unread && !r.waiting && !r.deferred).map(brief),
+          deferred: rows.filter(r => r.deferred).map(brief),
+        },
+        null,
+        1,
+      ),
+    )
+    const stored = ((await $.store.get(ANNOUNCED)) as Record<string, string> | undefined) ?? {}
+    const announced: Record<string, string> = {}
+    for (const [id, turn] of Object.entries(stored)) {
+      const r = byId.get(id)
+      if (r && (r.isRunning || r.turn === turn)) announced[id] = turn
+    }
+    // A question shown in the open dialog that its window no longer asks (you answered it there):
+    // the dialog is dropped — only while it is open, never mid-send — and the rest asked again.
+    if (centralTurn && inDialog && shown.size) {
+      let stale = false
+      for (const [id, turn] of shown) {
+        const r = byId.get(id)
+        if (r && !r.isRunning && r.turn === turn && r.waiting) continue
+        if ((await stillAsks($, id, turn)) === 'no') {
+          stale = true
+          break
         }
       }
-      waiting.push(q)
+      if (stale && centralTurn && inDialog) {
+        const turnId = centralTurn
+        for (const id of shown.keys()) delete announced[id]
+        centralTurn = undefined
+        shown = new Map()
+        inDialog = false
+        promptedAt = 0
+        await $.turn.abort({ turnId }).catch(() => undefined)
+      }
     }
-    const fresh = waiting.filter(q => known[q.id]?.turn !== q.turn)
-    await $.store.set('central-questions', Object.fromEntries(waiting.map(q => [q.id, q])))
-    const brief = (r: Row) => ({ title: r.title, link: r.link, since: r.lastActivityAt })
-    const queue: Omit<Queue, 'at'> = {
-      waiting,
-      working: rows.filter(r => r.isRunning).map(brief),
-      unread: rows.filter(r => r.unread && !r.waiting && !r.deferred).map(brief),
-      deferred: rows.filter(r => r.deferred).map(brief),
-    }
-    const text = JSON.stringify(queue)
-    if (text !== queueText) {
-      await $.fs.write(`${await homeDir($)}/${QUEUE_FILE}`, JSON.stringify({ at: new Date(await $.clock.now()).toISOString(), ...queue }, null, 1))
-      queueText = text
-    }
-    // A question you answered in its window while the dialog here still shows it: the dialog
-    // is dropped and, while others still wait, drawn again from the queue as it is now.
-    const live = new Set(waiting.map(keyOf))
-    if (centralTurn && shown.some(k => !live.has(k))) {
-      const turnId = centralTurn
-      centralTurn = undefined
-      shown = []
-      await $.turn.abort({ turnId }).catch(() => undefined)
-      centralPrompted = false
-      if (waiting.length && !fresh.length) fresh.push(...waiting)
-    }
-    const night = await readNight($)
-    const now = await $.clock.now()
-    if (night && now >= Date.parse(night.do) && (await $.store.get('morning')) !== night.od) {
-      await $.store.set('morning', night.od)
-      centralPrompted = true
-      void $.prompt.submit({ text: `[okna] Ráno: noc skončila. Postupuj podle skillu centrala, část „ráno“ (fronta ~/${QUEUE_FILE}).` })
+    await $.store.set(ANNOUNCED, announced)
+    if (night && now >= Date.parse(night.do)) {
+      // Once the night is over: one morning turn (marked when it begins), then it is day again.
+      if ((await $.store.get('morning')) !== night.od) {
+        if (!promptedAt || now - promptedAt > PROMPT_RETRY_MS) {
+          promptCentral($, now, `[okna] Ráno: noc skončila. Postupuj podle skillu centrala, část „ráno“ (fronta ~/${QUEUE_FILE}).`)
+        }
+        return
+      }
+    } else if (night) {
+      // The night: questions wait for the morning.
       return
     }
-    if (night && now < Date.parse(night.do)) return
-    if (fresh.length && !centralPrompted) {
-      centralPrompted = true
+    const fresh = waiting.filter(q => announced[q.id] !== q.turn)
+    if (fresh.length && (!promptedAt || now - promptedAt > PROMPT_RETRY_MS)) {
       const names = fresh.map(q => `„${q.title}“`).join(', ')
-      void $.prompt.submit({
-        text: `[okna] ${fresh.length === 1 ? 'Nová otázka' : 'Nové otázky'} z ${names}. Ukaž mi rozhodnutí podle skillu centrala (fronta ~/${QUEUE_FILE}).`,
-      })
+      promptCentral(
+        $,
+        now,
+        `[okna] ${fresh.length === 1 ? 'Nová otázka' : 'Nové otázky'} z ${names}. Ukaž mi rozhodnutí podle skillu centrala (fronta ~/${QUEUE_FILE}).`,
+      )
     }
   } catch (error) {
     await update($, infoAtom, () => `Centrála: ${String(error).slice(0, 200)}`)
@@ -705,8 +961,9 @@ export const register: Register = on => {
     let ticks = 0
     $.clock.every(POLL_MS, async () => {
       if (ticks++ % 6 === 0) await findSelf($).catch(() => undefined)
-      await refresh($)
-      await centralTick($)
+      // The central window polls itself; the others share one poll through the store.
+      if (await isCentral($)) await centralTick($)
+      else await refresh($)
     })
     await update($, barAtom, () => false)
     if ((await $.store.get('bar')) === true) await update($, barAtom, () => true)
@@ -716,19 +973,62 @@ export const register: Register = on => {
   })
 
   // The central window's turn has begun: it reads the queue as it is now.
+  // In the central window: a turn a prompt of this plugin (or /centrala) began reads the queue
+  // as it is now, so what it holds counts as put to you.
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) {
-      centralPrompted = false
-      centralTurn = e.text.includes('[okna]') ? e.turnId : undefined
-      const known = centralTurn ? ((await $.store.get('central-questions')) as Record<string, Question> | undefined) : undefined
-      shown = Object.values(known ?? {}).map(keyOf)
+    if (e.agentId === undefined && (await isCentral($))) {
+      if (/\[okna\]|centrala/i.test(e.text)) {
+        promptedAt = 0
+        centralTurn = e.turnId
+        shown = new Map(current.map(q => [q.id, q.turn]))
+        const announced = ((await $.store.get(ANNOUNCED)) as Record<string, string> | undefined) ?? {}
+        await $.store.set(ANNOUNCED, { ...announced, ...Object.fromEntries(shown) })
+        if (/\[okna\] Ráno/.test(e.text)) {
+          const night = await readNight($)
+          if (night) await $.store.set('morning', night.od)
+        }
+      } else {
+        centralTurn = undefined
+        shown = new Map()
+      }
     }
     return next(e)
   })
 
-  on('turn.complete', ($, e, next) => {
-    centralTurn = undefined
-    shown = []
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (!centralTurn) return next(e)
+    inDialog = true
+    try {
+      return await next(e)
+    } finally {
+      inDialog = false
+    }
+  })
+
+  // Centrála's replies to the windows, by either tool: refused when the window has moved on.
+  on('tool.call', { tool: 'mcp__ccd_session_mgmt__send_message' }, async ($, e, next) => {
+    const args = e as unknown as { session_id?: unknown; message?: unknown }
+    const reason = await refuseSend($, String(args.session_id ?? ''), String(args.message ?? ''))
+    return reason ? { deny: reason } : next(e)
+  })
+
+  on('session.send', async ($, e, next) => {
+    const reason = await refuseSend($, e.to, e.text)
+    return reason ? { isDelivered: false, reason } : next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.turnId === centralTurn) {
+      // The turn died before you saw its questions: they are put to you again.
+      if (e.reason === 'error' || e.reason === 'refusal') {
+        const announced = ((await $.store.get(ANNOUNCED)) as Record<string, string> | undefined) ?? {}
+        for (const id of shown.keys()) delete announced[id]
+        await $.store.set(ANNOUNCED, announced)
+      }
+      centralTurn = undefined
+      shown = new Map()
+      inDialog = false
+    }
     return next(e)
   })
 

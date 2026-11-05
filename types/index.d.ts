@@ -15,6 +15,8 @@ export type Row = {
   // comes back once it changes, i.e. once you write into it (a compact leaves it alone).
   turn: string
   deferred: boolean
+  // This PC's waiting windows: the question as the window asked it, with the replies its buttons send.
+  question?: { text: string; context: string; options: string[] }
 }
 
 // The windows of another of your PCs, as that PC last sent them through your server.

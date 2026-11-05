@@ -46,8 +46,32 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
 - Stav je v `%USERPROFILE%\.claude\centrala.json` (otázky + co pracuje / je nepřečtené / odložené);
   Centrála ho čte skillem `centrala` (`/okna:centrala` ručně).
 - Jiný název okna: `"central": "<regulární výraz>"` v `okna.json`.
-- Otevřený dialog v Centrále zmizí, když otázku mezitím vyřešíš přímo v okně.
-- Zatím jen okna tohoto PC.
+- Otevřený dialog v Centrále zmizí, když otázku mezitím vyřešíš přímo v okně (ostatní otázky z něj
+  se ukážou znovu). Odpověď do okna, které mezitím pokračovalo, plugin neodešle — ani když se Centrála
+  splete.
+- Centrála sama hlídá ostatní okna (podle svých pravidel, ať mají ostatní okna jakoukoli verzi pluginu)
+  a frontu přepisuje každých 10 s; starší fronta znamená, že plugin v Centrále neběží.
+- Zatím jen okna tohoto PC. Otázku, kterou okno klade dialogem s volbami (AskUserQuestion) uprostřed
+  práce, Centrála nevidí — okno se v tu chvíli tváří jako pracující; odpověz v něm.
+
+## Jak panel pozná, že okno čeká
+
+Podle toho, jak skončil poslední tah okna, v tomto pořadí:
+
+1. po poslední odpovědi okna už něco přišlo (tvoje zpráva, i přerušená, zpráva jiného okna, `/clear`
+   a psaní dál) → nečeká,
+2. tah skončil rámečkem „Další krok“ s otázkou → čeká (otázka i tlačítka jdou do Centrály),
+3. hodnocení aplikace (to, podle kterého svítí boční panel) říká „čeká na tebe“ → čeká,
+4. aplikace nebo rámeček bez otázky říkají, že nic nečeká → nečeká,
+5. jinak odhad podle závěru odpovědi (otazník, „mám to udělat?“…).
+
+Přepis okna se čte z `~/.claude/projects/…/<relace>.jsonl` (jen konec souboru; compact a místní příkazy
+jako `/model` tah nezačínají). Platí jen konec, který obsahuje poslední odpověď okna podle aplikace —
+jinak panel neví a nic neukáže. Čte se jednou za odpověď a znovu, jen když přepis čekajícího okna
+mezitím narostl. Okno, které právě pracuje, nikdy nečeká.
+
+Po aktualizaci pluginu dej `/reload-plugins` ve všech oknech (nebo restartuj aplikaci): okna se starší
+verzí počítají stav po svém.
 
 ### Noc
 
