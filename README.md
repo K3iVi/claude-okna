@@ -46,7 +46,18 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
 - Stav je v `%USERPROFILE%\.claude\centrala.json` (otázky + co pracuje / je nepřečtené / odložené);
   Centrála ho čte skillem `centrala` (`/okna:centrala` ručně).
 - Jiný název okna: `"central": "<regulární výraz>"` v `okna.json`.
+- Otevřený dialog v Centrále zmizí, když otázku mezitím vyřešíš přímo v okně.
 - Zatím jen okna tohoto PC.
+
+### Noc
+
+V Centrále napiš **„noc“** (nebo „noc do 8:00“): pracujícím a čekajícím oknům přepne oprávnění na *auto*
+(každé schválíš) a pošle jim zprávu `[noc]`, ať vratné věci rozhodují samy, zapisují je do
+`~/.claude/noc-zaznam.md` a co chce tvoje OK, nechají na ráno. Přes noc se Centrála nebudí;
+v nastavený čas (výchozí 7:00) nebo na **„ráno“** vrátí oprávnění, shrne noc a ukáže odložené otázky.
+
+Okna se řídí pravidlem „Režim noc“ ve tvém `CLAUDE.md` — sepiš si do něj, co smí rozhodnout sama
+(kód, testy, commity…) a co nikdy (nasazení, zprávy ven, mazání…).
 
 ## Víc počítačů
 

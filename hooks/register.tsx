@@ -26,6 +26,9 @@ type Config = { sync?: { url?: string; key?: string }; hideTitles?: string[]; ce
 // buttons, from QUEUE_FILE. Its title is matched by this pattern, or by okna.json "central".
 const CENTRAL_TITLE = '^centr[áa]la'
 const QUEUE_FILE = '.claude/centrala.json'
+// Night mode, switched on from the central window: {"od": ISO, "do": ISO}. Until "do" the central
+// window is not woken by questions; once it passes, it is woken once for the morning summary.
+const NIGHT_FILE = '.claude/noc.json'
 const RC_LINK = /^claude:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{8,64}$/
 
 const rowsAtom = atom({ plugin: 'okna', key: 'rows' } as const, [] as Row[])
@@ -493,10 +496,31 @@ type Queue = {
   deferred: { title: string; link: string; since: string }[]
 }
 
+let home: string | undefined
+const homeDir = async ($: EngineInterface) => (home ??= await envVar($, 'USERPROFILE'))
+
+async function readNight($: EngineInterface): Promise<{ od: string; do: string } | undefined> {
+  try {
+    const path = `${await homeDir($)}/${NIGHT_FILE}`
+    if (!(await $.fs.exists(path))) return undefined
+    const night = JSON.parse((await $.fs.read(path)) as string) as { od?: unknown; do?: unknown }
+    return typeof night.od === 'string' && typeof night.do === 'string' && !Number.isNaN(Date.parse(night.do))
+      ? { od: night.od, do: night.do }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 let isCentralTicking = false
 // A prompt to the central window is waiting for its turn: one is enough, it reads the whole queue.
 let centralPrompted = false
 let queueText = ''
+// The central turn a prompt of this plugin started, and the questions it was shown (id + turn):
+// once one of them is answered in its own window, that turn's dialog is stale.
+let centralTurn: string | undefined
+let shown: string[] = []
+const keyOf = (q: Question) => `${q.id}:${q.turn}`
 
 // In the central window: keeps QUEUE_FILE up to date and, when a window asks something new,
 // starts a turn there. Asking costs nothing in the asking windows and one turn here per question.
@@ -545,9 +569,29 @@ async function centralTick($: EngineInterface) {
     }
     const text = JSON.stringify(queue)
     if (text !== queueText) {
-      await $.fs.write(`${await envVar($, 'USERPROFILE')}/${QUEUE_FILE}`, JSON.stringify({ at: new Date(await $.clock.now()).toISOString(), ...queue }, null, 1))
+      await $.fs.write(`${await homeDir($)}/${QUEUE_FILE}`, JSON.stringify({ at: new Date(await $.clock.now()).toISOString(), ...queue }, null, 1))
       queueText = text
     }
+    // A question you answered in its window while the dialog here still shows it: the dialog
+    // is dropped and, while others still wait, drawn again from the queue as it is now.
+    const live = new Set(waiting.map(keyOf))
+    if (centralTurn && shown.some(k => !live.has(k))) {
+      const turnId = centralTurn
+      centralTurn = undefined
+      shown = []
+      await $.turn.abort({ turnId }).catch(() => undefined)
+      centralPrompted = false
+      if (waiting.length && !fresh.length) fresh.push(...waiting)
+    }
+    const night = await readNight($)
+    const now = await $.clock.now()
+    if (night && now >= Date.parse(night.do) && (await $.store.get('morning')) !== night.od) {
+      await $.store.set('morning', night.od)
+      centralPrompted = true
+      void $.prompt.submit({ text: `[okna] Ráno: noc skončila. Postupuj podle skillu centrala, část „ráno“ (fronta ~/${QUEUE_FILE}).` })
+      return
+    }
+    if (night && now < Date.parse(night.do)) return
     if (fresh.length && !centralPrompted) {
       centralPrompted = true
       const names = fresh.map(q => `„${q.title}“`).join(', ')
@@ -672,8 +716,19 @@ export const register: Register = on => {
   })
 
   // The central window's turn has begun: it reads the queue as it is now.
-  on('turn.start', ($, e, next) => {
-    if (e.agentId === undefined) centralPrompted = false
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      centralPrompted = false
+      centralTurn = e.text.includes('[okna]') ? e.turnId : undefined
+      const known = centralTurn ? ((await $.store.get('central-questions')) as Record<string, Question> | undefined) : undefined
+      shown = Object.values(known ?? {}).map(keyOf)
+    }
+    return next(e)
+  })
+
+  on('turn.complete', ($, e, next) => {
+    centralTurn = undefined
+    shown = []
     return next(e)
   })
 
