@@ -436,7 +436,13 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
             question = ending.ask
           } else if (blocked) {
             waiting = true
-            question = { text: summary?.needs_action || summary?.status_detail || fallback, context: '', options: [] }
+            // Centrála gets it only once the transcript shows nothing came after that reply: the
+            // app's verdict does not say so, nor is its "running" always right.
+            if (ending?.state === 'replied') {
+              question = { text: summary?.needs_action || summary?.status_detail || fallback, context: '', options: [] }
+            } else {
+              snippet = summary?.needs_action || summary?.status_detail || fallback
+            }
           } else if (fits || (ending?.state === 'replied' && ending.boxed)) {
             // The app or the window's own box says nothing waits.
           } else if (ending?.state === 'replied') {
@@ -649,8 +655,9 @@ async function endingOf(
     if (cached.state === 'answered' || (known && known.mark === mark)) return cached
     if (cached.state === 'unknown' && now - (cached.at ?? 0) < UNKNOWN_RETRY_MS) return undefined
   }
-  // Out of reads this poll: a grown transcript's old reading stands until the next one.
-  if (tailReads >= TAIL_READS_PER_POLL) return known
+  // Out of reads this poll: a grown transcript's old reading no longer holds, nothing to go by
+  // until the next one (a question it asked is not shown meanwhile).
+  if (tailReads >= TAIL_READS_PER_POLL) return undefined
   const before = mark ?? (await transcriptMark($, record))
   const read = await readTurn($, record, turn)
   if (read.state === 'unknown') {

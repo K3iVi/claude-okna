@@ -117,7 +117,7 @@ const RECORDS: Record<string, object> = {
   bumped: { lastAssistantUuid: 'u-a', lastTurnEdgeAt: at(300), lastActivityAt: at(50), lastFocusedAt: at(240), postTurnSummary: done('u-a') },
   // A question seen and left for more than a day.
   old: { lastAssistantUuid: 'u-b', lastTurnEdgeAt: at(1800), lastFocusedAt: at(1740), postTurnSummary: blocked('u-b') },
-  fresh: { lastAssistantUuid: 'u-c', lastTurnEdgeAt: at(120), lastFocusedAt: at(60), postTurnSummary: blocked('u-c') },
+  fresh: { lastAssistantUuid: 'u-c', lastTurnEdgeAt: at(120), lastFocusedAt: at(60), postTurnSummary: blocked('u-c'), cliSessionId: '77777777-7777-7777-7777-777777777777', cwd: 'C:\\w' },
   // Compacted 50 min ago, after its last reply 3 h ago that was read.
   compacted: { lastAssistantUuid: 'u-d', lastTurnEdgeAt: at(50), lastFocusedAt: at(120), postTurnSummary: done('u-d') },
   unread: { lastAssistantUuid: 'u-e', lastTurnEdgeAt: at(120), lastFocusedAt: at(180), postTurnSummary: done('u-e') },
@@ -149,6 +149,11 @@ const TRANSCRIPTS: Record<string, string> = {
   '33333333-3333-3333-3333-333333333333': turnLines({ recap: 'Hotovo.' }, 'Chceš ještě něco?', 'u-h').join('\r\n'),
   '44444444-4444-4444-4444-444444444444': [...CLEARED, line({ type: 'user', origin: { kind: 'human' }, message: { content: 'nová práce' } })].join('\r\n'),
   '55555555-5555-5555-5555-555555555555': turnLines(ASKS, 'Nasadit teď?', 'u-i').join('\r\n'),
+  // No box: the app's verdict says what it asks.
+  '77777777-7777-7777-7777-777777777777': [
+    line({ type: 'user', origin: { kind: 'human' }, message: { content: 'udělej to' } }),
+    line({ type: 'assistant', uuid: 'u-c', message: { content: [{ type: 'text', text: 'Mám to nasadit?' }] } }),
+  ].join('\r\n'),
   '66666666-6666-6666-6666-666666666666': [...turnLines(ASKS, 'Nasadit teď?', 'u-j'), line({ type: 'user', origin: { kind: 'human' }, message: { content: 'Ano' } })].join('\r\n'),
 }
 // The script a tail read hands PowerShell: -EncodedCommand is UTF-16LE in base64.
@@ -347,6 +352,17 @@ test('how a turn ended comes from the transcript: a box that asks, one that does
   expect(answered({ type: 'user', origin: { kind: 'task-notification' }, message: { content: 'x' } })).toEqual({ state: 'answered' })
   // ...but only once the reply before it is the last one the app knows: else the tail is behind.
   expect(turnEnding([...turn(asking, 'x'), line({ type: 'user', origin: { kind: 'human' }, message: { content: 'ano' } })], 'r9')).toEqual({ state: 'unknown' })
+  // Another session's reply came and the window works on, its new replies not yet recorded by the
+  // app (nor, at times, its running): it moved on.
+  const working = [
+    line({ type: 'user', origin: { kind: 'peer' }, message: { content: '<cross-session-message>Ano</cross-session-message>' } }),
+    line({ type: 'assistant', uuid: 'r5', message: { content: [{ type: 'text', text: 'Pracuji na tom.' }] } }),
+    line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
+    line({ type: 'assistant', uuid: 'r6', message: { content: [box({ ask: 'Další otázka?' })] } }),
+  ]
+  expect(turnEnding([...turn(asking, 'x'), ...working], 'r2')).toEqual({ state: 'answered' })
+  // So with an older transcript's prompt, which names no origin.
+  expect(turnEnding([...turn(asking, 'x'), line({ type: 'user', message: { content: 'dál' } }), ...working.slice(1)], 'r2')).toEqual({ state: 'answered' })
   // A reply too long to read whole: how its turn closed is unknown.
   expect(turnEnding([...turn(asking, 'x'), line({ type: 'assistant', huge: true, uuid: 'r3', message: { content: [] } })], 'r3')).toEqual({ state: 'unknown' })
   // A subagent's lines are not the window's.

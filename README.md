@@ -50,8 +50,10 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
   se ukážou znovu). Odpověď do okna, které mezitím pokračovalo, plugin neodešle — ani když se Centrála
   splete. Neodešle ani odpověď, kterou jsi v dialogu u otázky toho okna nevybral ani nenapsal
   (Centrála si ji nesmí domyslet); odpověď, kterou Centrále nadiktuješ sám v novém tahu, projde.
-- Příkaz s lomítkem (`/reload-plugins`…) napsaný, když má Centrála otevřený dialog, se nespustí —
-  dojde jako zpráva. Zadej ho, až Centrála doběhne.
+- Příkaz s lomítkem (`/reload-plugins`…) napsaný, když má Centrála otevřený dialog, dojde Centrále
+  jako zpráva a spustí se až po jejím tahu.
+- Do Centrály jde otázka, jen když přepis okna potvrdí, že po ní nic nepřišlo — samotnému hodnocení
+  aplikace (ani jejímu „pracuje / nepracuje“) se nevěří.
 - Centrála sama hlídá ostatní okna (podle svých pravidel, ať mají ostatní okna jakoukoli verzi pluginu)
   a frontu přepisuje každých 10 s; starší fronta znamená, že plugin v Centrále neběží.
 - Zatím jen okna tohoto PC. Otázku, kterou okno klade dialogem s volbami (AskUserQuestion) uprostřed
