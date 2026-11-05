@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'claude-code'
 
 import type { RemotePc, Row } from '../types'
+import { questionFromTail } from './transcript'
+import type { Question } from './transcript'
 
 const PANE = 'okna'
 const TITLE = 'Okna'
@@ -17,7 +19,13 @@ const WAIT_EXPIRE_MS = 24 * 3_600_000
 // its key, and window titles never to list. Without the file the panel shows this PC alone.
 const CONFIG_FILE = '.claude/okna.json'
 const LEGACY_SYNC_FILE = '.claude/okna-sync.json'
-type Config = { sync?: { url?: string; key?: string }; hideTitles?: string[] }
+type Config = { sync?: { url?: string; key?: string }; hideTitles?: string[]; central?: string }
+
+// The central window ("Centrála"): the window you answer the others' questions from. Its own
+// copy of the plugin tells it of each new question; it reads them, with the asking window's own
+// buttons, from QUEUE_FILE. Its title is matched by this pattern, or by okna.json "central".
+const CENTRAL_TITLE = '^centr[áa]la'
+const QUEUE_FILE = '.claude/centrala.json'
 const RC_LINK = /^claude:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{8,64}$/
 
 const rowsAtom = atom({ plugin: 'okna', key: 'rows' } as const, [] as Row[])
@@ -54,16 +62,28 @@ type Replies = Record<string, { turn: string; at: number }>
 
 let isRefreshing = false
 
-// This window's own id; '' until known.
+// This window's own id and title; '' until known.
 let selfId = ''
+let selfTitle = ''
 
 async function findSelf($: EngineInterface): Promise<Session | undefined> {
   const res = await $.mcp.call(SESSIONS, 'get_session', { session_id: 'self' })
   if (res.isError) return undefined
   const self = JSON.parse(textOf(res)) as Session
   selfId = self.sessionId
+  selfTitle = self.title ?? ''
   return self
 }
+
+async function centralTitle($: EngineInterface): Promise<RegExp> {
+  try {
+    return new RegExp((await readConfig($)).central || CENTRAL_TITLE, 'i')
+  } catch {
+    return new RegExp(CENTRAL_TITLE, 'i')
+  }
+}
+
+const isCentral = async ($: EngineInterface) => selfTitle !== '' && (await centralTitle($)).test(selfTitle)
 
 const notSelf = (rows: Row[]) => rows.filter(r => r.id !== selfId)
 
@@ -299,7 +319,8 @@ async function exchange($: EngineInterface, rows: Row[]): Promise<RemotePc[]> {
 
 async function refresh($: EngineInterface, force = false) {
     if (isRefreshing) return
-    if (!(await $.ui.panes()).some(pane => pane.id === PANE)) return
+    // The central window polls with its pane closed too: it is told of each new question.
+    if (!(await $.ui.panes()).some(pane => pane.id === PANE) && !(await isCentral($))) return
     isRefreshing = true
     try {
       // The folded sections as last opened or closed in any window.
@@ -322,7 +343,7 @@ async function refresh($: EngineInterface, force = false) {
       }
       const self = await findSelf($)
       const now = await $.clock.now()
-      const hiddenTitle = await hiddenTitles($)
+      const hiddenTitle = [...(await hiddenTitles($)), await centralTitle($)]
       const sessions = [...(JSON.parse(textOf(listed)) as Session[]), ...(self ? [self] : [])].filter(
         s => !s.isArchived && !hiddenTitle.some(re => re.test(s.title)),
       )
@@ -443,6 +464,104 @@ async function refresh($: EngineInterface, force = false) {
     }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// The last lines of the window's transcript, ~/.claude/projects/<folder>/<cliSessionId>.jsonl.
+// Transcripts run to 100+ MB, so PowerShell reads only the tail.
+async function transcriptTail($: EngineInterface, record: AppRecord): Promise<string[]> {
+  if (!record.cliSessionId || !UUID.test(record.cliSessionId)) return []
+  projectsDir ??= `${await envVar($, 'USERPROFILE')}/.claude/projects`
+  for (const cwd of new Set([record.cwd, record.originCwd].filter((c): c is string => !!c))) {
+    const path = `${projectsDir}/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${record.cliSessionId}.jsonl`
+    if (!(await $.fs.exists(path))) continue
+    const { stdout } = await $.process.run([
+      'powershell',
+      '-NoProfile',
+      '-Command',
+      `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Content -LiteralPath '${path.replace(/'/g, "''")}' -Tail 80 -Encoding UTF8`,
+    ])
+    return stdout.split(/\r?\n/)
+  }
+  return []
+}
+
+type Queue = {
+  at: string
+  waiting: Question[]
+  working: { title: string; link: string; since: string }[]
+  unread: { title: string; link: string; since: string }[]
+  deferred: { title: string; link: string; since: string }[]
+}
+
+let isCentralTicking = false
+// A prompt to the central window is waiting for its turn: one is enough, it reads the whole queue.
+let centralPrompted = false
+let queueText = ''
+
+// In the central window: keeps QUEUE_FILE up to date and, when a window asks something new,
+// starts a turn there. Asking costs nothing in the asking windows and one turn here per question.
+async function centralTick($: EngineInterface) {
+  if (isCentralTicking || !(await isCentral($))) return
+  isCentralTicking = true
+  try {
+    const snapshot = (await $.store.get('snapshot')) as Snapshot | undefined
+    if (!snapshot) return
+    const rows = notSelf(snapshot.rows)
+    const known = ((await $.store.get('central-questions')) as Record<string, Question> | undefined) ?? {}
+    const dirs = await findRecordDirs($)
+    const waiting: Question[] = []
+    for (const r of rows) {
+      if (!r.waiting || r.deferred || !r.turn) continue
+      let q = known[r.id]?.turn === r.turn ? known[r.id] : undefined
+      if (!q) {
+        const record = await readRecord($, dirs, r.id)
+        let found: ReturnType<typeof questionFromTail>
+        try {
+          found = record ? questionFromTail(await transcriptTail($, record)) : undefined
+        } catch {
+          found = undefined
+        }
+        q = {
+          id: r.id,
+          title: r.title,
+          link: r.link,
+          turn: r.turn,
+          question: found?.question || r.snippet || 'Okno čeká na tvou odpověď.',
+          context: found?.context ?? '',
+          options: found?.options ?? [],
+          since: r.lastActivityAt,
+        }
+      }
+      waiting.push(q)
+    }
+    const fresh = waiting.filter(q => known[q.id]?.turn !== q.turn)
+    await $.store.set('central-questions', Object.fromEntries(waiting.map(q => [q.id, q])))
+    const brief = (r: Row) => ({ title: r.title, link: r.link, since: r.lastActivityAt })
+    const queue: Omit<Queue, 'at'> = {
+      waiting,
+      working: rows.filter(r => r.isRunning).map(brief),
+      unread: rows.filter(r => r.unread && !r.waiting && !r.deferred).map(brief),
+      deferred: rows.filter(r => r.deferred).map(brief),
+    }
+    const text = JSON.stringify(queue)
+    if (text !== queueText) {
+      await $.fs.write(`${await envVar($, 'USERPROFILE')}/${QUEUE_FILE}`, JSON.stringify({ at: new Date(await $.clock.now()).toISOString(), ...queue }, null, 1))
+      queueText = text
+    }
+    if (fresh.length && !centralPrompted) {
+      centralPrompted = true
+      const names = fresh.map(q => `„${q.title}“`).join(', ')
+      void $.prompt.submit({
+        text: `[okna] ${fresh.length === 1 ? 'Nová otázka' : 'Nové otázky'} z ${names}. Ukaž mi rozhodnutí podle skillu centrala (fronta ~/${QUEUE_FILE}).`,
+      })
+    }
+  } catch (error) {
+    await update($, infoAtom, () => `Centrála: ${String(error).slice(0, 200)}`)
+  } finally {
+    isCentralTicking = false
+  }
+}
+
 // The prompt cache lives an hour after the last activity; resuming later re-caches
 // the whole context. Minutes left in the last stretch before that, else null.
 function cacheLeftMin(row: Row, now: number): number | null {
@@ -538,11 +657,23 @@ const windowsCount = (n: number) => `${n} ${n === 1 ? 'okno' : n >= 2 && n <= 4 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'okna', description: 'Přehled oken: otevře panel a vypíše seznam do chatu' })
-    $.clock.every(POLL_MS, () => refresh($))
+    // The title is read again each minute: a window renamed "Centrála" becomes the central one.
+    let ticks = 0
+    $.clock.every(POLL_MS, async () => {
+      if (ticks++ % 6 === 0) await findSelf($).catch(() => undefined)
+      await refresh($)
+      await centralTick($)
+    })
     await update($, barAtom, () => false)
     if ((await $.store.get('bar')) === true) await update($, barAtom, () => true)
     await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
     void refresh($)
+    return next(e)
+  })
+
+  // The central window's turn has begun: it reads the queue as it is now.
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) centralPrompted = false
     return next(e)
   })
 

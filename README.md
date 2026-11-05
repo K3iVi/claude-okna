@@ -35,6 +35,19 @@ Na řádku (při najetí myší) jsou dvě akce:
 
 Okna se stejným začátkem názvu jde skrýt trvale v nastavení (`hideTitles`, viz níže).
 
+## Centrála — odpovídání z jednoho okna
+
+Pojmenuj jedno okno **„Centrála“** (a zapni mu Remote Control, chceš-li odpovídat z mobilu). Plugin v něm
+pak hlídá ostatní okna, a když se některé zeptá, spustí v Centrále jeden tah: ta ukáže otázku s tlačítky
+toho okna (z jeho rámečku „Další krok“ nebo z jeho otázky s volbami) a tvoji volbu pošle do okna doslova.
+Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
+
+- Nic se neprochází dokola: Centrála dělá tah jen při nové otázce (ostatní okna to nestojí nic).
+- Stav je v `%USERPROFILE%\.claude\centrala.json` (otázky + co pracuje / je nepřečtené / odložené);
+  Centrála ho čte skillem `centrala` (`/okna:centrala` ručně).
+- Jiný název okna: `"central": "<regulární výraz>"` v `okna.json`.
+- Zatím jen okna tohoto PC.
+
 ## Víc počítačů
 
 Pracuješ-li na dvou PC, panel umí ukázat i okna druhého počítače — vlastní sekce s názvem PC

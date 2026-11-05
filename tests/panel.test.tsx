@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
+import { questionFromTail } from '../hooks/transcript'
+
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
 
@@ -206,6 +208,22 @@ test('an opened "Dřív" is kept for the other windows', async ($, on) => {
   await ui.press({ key: 'f-local-earlier' })
   expect(stored.get('open')).toEqual({ 'local-earlier': true })
   await ui.unmount()
+})
+
+test('a window\'s question and its own buttons come from its transcript', async () => {
+  const line = (o: object) => JSON.stringify(o)
+  const box = { type: 'tool_use', name: 'mcp__ccd_turn__wrap_up', input: { recap: 'Hotovo.', ask: 'Mám to nasadit?', actions: [{ label: 'Ano, nasaď' }, { action: 'commit' }, { label: 'Ne' }] } }
+  const tail = [
+    line({ type: 'user', message: { content: 'udělej to' } }),
+    line({ type: 'assistant', message: { content: [box] } }),
+    line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
+    line({ type: 'assistant', message: { content: [{ type: 'text', text: 'Mám to nasadit?' }] } }),
+  ]
+  expect(questionFromTail(tail)).toEqual({ question: 'Mám to nasadit?', context: 'Hotovo.', options: ['Ano, nasaď', 'Ne'] })
+  // Answered since: no question.
+  expect(questionFromTail([...tail, line({ type: 'user', message: { content: 'ano' } })])).toBeUndefined()
+  const ask = { type: 'tool_use', name: 'AskUserQuestion', input: { questions: [{ question: 'Kterou?', options: [{ label: 'A' }, { label: 'B' }] }] } }
+  expect(questionFromTail([line({ type: 'assistant', message: { content: [ask] } }), 'není json'])).toEqual({ question: 'Kterou?', context: '', options: ['A', 'B'] })
 })
 
 test('every surface draws the pane', async ($, on) => {
