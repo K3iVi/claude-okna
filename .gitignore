@@ -1,0 +1,6 @@
+okna.json
+*.key
+.env
+__pycache__/
+node_modules/
+.claude-plugin/types/

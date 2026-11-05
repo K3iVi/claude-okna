@@ -1,0 +1,11 @@
+{
+  "name": "claude-okna",
+  "owner": { "name": "K3iVi" },
+  "plugins": [
+    {
+      "name": "okna",
+      "source": "./",
+      "description": "Panel s přehledem oken Claude: čeká na tebe, pracuje, končí cache, nepřečtené; odložit, skrýt; okna z dalších PC"
+    }
+  ]
+}
