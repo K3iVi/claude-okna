@@ -498,3 +498,34 @@ test('Centrála asks only the window that wants it, not the one it was forked fr
   await clock.advance(10_000)
   expect(queue()).toEqual(['p'])
 })
+
+test('Centrála gets what it needs to decide: the context, the buttons\' descriptions, and tasks marked', { timeoutMs: 30_000 }, async ($, on) => {
+  const dlg = { questions: [{ question: 'Která?', options: [{ label: 'A', description: 'Rychlejší' }, { label: 'B' }] }] }
+  expect(askOfDialog('d', dlg).descriptions).toEqual(['Rychlejší', ''])
+  expect(askOfDialog('d', { questions: [{ question: 'Která?', options: [{ label: 'A' }] }] }).descriptions).toBeUndefined()
+  const long = 'x'.repeat(1000)
+  expect(askOfBox('b', { ask: 'Nasadit?', recap: long, actions: [{ label: 'Ano' }] })?.context).toBe(long)
+
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const sessions = [session('a', 'Ptá se'), session('t', 'Úkol')]
+  put(files, RECORD('a'), { lastAssistantUuid: 'u-a', lastTurnEdgeAt: at(5), lastFocusedAt: at(10) })
+  put(files, RECORD('t'), {
+    lastAssistantUuid: 'u-t',
+    lastTurnEdgeAt: at(5),
+    lastFocusedAt: at(10),
+    postTurnSummary: { status_category: 'blocked', needs_action: 'zkušební import zipů', summarizes_uuid: 'u-t' },
+  })
+  put(files, STATE('a'), state('a', { phase: 'dialog', since: at(1), ask: { id: 'd:t:a', text: 'Která?', context: '', options: ['A', 'B'], descriptions: ['Rychlejší', ''] } }))
+  put(files, STATE('t'), state('t', { phase: 'done', boxed: false, prose: 'Čekám na tvůj zkušební import obou zipů.' }))
+  mockEnv(on, clock, { self: 'Centrála', sessions, files })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  on('turn.abort', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(10_000)
+  type W = { id: string; context: string; descriptions?: string[]; task?: boolean }
+  const queue = readJson<{ waiting: W[] }>(files, `${HOME}/.claude/centrala.json`).waiting
+  expect(queue.find(w => w.id === 'a')).toMatchObject({ descriptions: ['Rychlejší', ''] })
+  expect(queue.find(w => w.id === 'a')?.task).toBeUndefined()
+  expect(queue.find(w => w.id === 't')).toMatchObject({ task: true, context: 'Čekám na tvůj zkušební import obou zipů.' })
+})

@@ -20,8 +20,11 @@ export type Phase = 'working' | 'asks' | 'dialog' | 'approval' | 'done'
 // answer to an older one is never taken for this one.
 // A dialog of several questions keeps each with its own buttons in `parts` (`text` then joins them,
 // `options` stays empty for readers that know no parts).
-export type AskPart = { text: string; options: string[] }
-export type Ask = { id: string; text: string; context: string; options: string[]; parts?: AskPart[] }
+// `descriptions`: the window's own words under each button (a dialog has them, a box not).
+export type AskPart = { text: string; options: string[]; descriptions?: string[] }
+export type Ask = { id: string; text: string; context: string; options: string[]; descriptions?: string[]; parts?: AskPart[] }
+// How much of a box's recap (or a reply's closing prose) goes with a question: enough to decide.
+export const CONTEXT_MAX = 1200
 
 export type WindowState = {
   v: number
@@ -110,11 +113,17 @@ export function acceptsAnswer(state: WindowState | undefined, answer: Answer): b
 // The answer to a question with parts as one text: "1) … 2) …".
 export const joinParts = (texts: readonly string[]) => texts.map((t, i) => `${i + 1}) ${t}`).join(' ')
 
-const optionsOf = (q: { options?: readonly { label?: string }[] }) =>
-  (q.options ?? []).map(o => String(o.label ?? '').trim()).filter(Boolean).slice(0, 4)
+type DialogOption = { label?: string; description?: string }
+const kept = (q: { options?: readonly DialogOption[] }) => (q.options ?? []).filter(o => String(o.label ?? '').trim()).slice(0, 4)
+const optionsOf = (q: { options?: readonly DialogOption[] }) => kept(q).map(o => String(o.label).trim())
+// The buttons' descriptions, when any has one.
+const descriptionsOf = (q: { options?: readonly DialogOption[] }) => {
+  const d = kept(q).map(o => String(o.description ?? '').trim().slice(0, 300))
+  return d.some(Boolean) ? { descriptions: d } : {}
+}
 
 type DialogInput = {
-  questions?: readonly { question?: string; header?: string; options?: readonly { label?: string }[] }[]
+  questions?: readonly { question?: string; header?: string; options?: readonly { label?: string; description?: string }[] }[]
 }
 
 // A dialog's question as Centrála shows it: one question with its options; several as parts, each
@@ -123,10 +132,10 @@ export function askOfDialog(id: string, input: DialogInput): Ask {
   const qs = (input.questions ?? []).filter(q => typeof q.question === 'string' && q.question.trim())
   if (qs.length === 1) {
     const q = qs[0]!
-    return { id, text: q.question!.trim().slice(0, 400), context: '', options: optionsOf(q) }
+    return { id, text: q.question!.trim().slice(0, 400), context: '', options: optionsOf(q), ...descriptionsOf(q) }
   }
   if (!qs.length) return { id, text: 'Okno se ptá v dialogu.', context: '', options: [] }
-  const parts = qs.map(q => ({ text: q.question!.trim().slice(0, 400), options: optionsOf(q) }))
+  const parts = qs.map(q => ({ text: q.question!.trim().slice(0, 400), options: optionsOf(q), ...descriptionsOf(q) }))
   return { id, text: joinParts(parts.map(p => p.text)).slice(0, 400), context: '', options: [], parts }
 }
 
@@ -155,8 +164,8 @@ export function askOfBox(id: string, input: BoxInput): Ask | null {
     .map(a => String((a as { label?: unknown }).label ?? '').trim().slice(0, 120))
     .filter(Boolean)
     .slice(0, 4)
-  return { id, text: ask.slice(0, 400), context: typeof input.recap === 'string' ? input.recap.slice(0, 400) : '', options }
+  return { id, text: ask.slice(0, 400), context: typeof input.recap === 'string' ? input.recap.slice(0, CONTEXT_MAX) : '', options }
 }
 
-// The last ~400 characters of the reply's prose.
-export const proseTail = (text: string) => (text.length > 400 ? text.slice(-400) : text)
+// The end of the reply's prose (what Centrála shows of a task, the panel's guess).
+export const proseTail = (text: string) => (text.length > CONTEXT_MAX ? text.slice(-CONTEXT_MAX) : text)

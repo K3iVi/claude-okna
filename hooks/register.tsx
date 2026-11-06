@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.4'
+const PLUGIN_VERSION = '0.9.5'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -485,6 +485,7 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
               text: st.ask.text,
               context: st.ask.context,
               options: st.ask.options,
+              ...(st.ask.descriptions?.length ? { descriptions: st.ask.descriptions } : {}),
               ...(st.ask.parts?.length ? { parts: st.ask.parts } : {}),
             }
             askId = st.ask.id
@@ -494,11 +495,12 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
               // You broke it off: nothing asked waits.
             } else if (blocked) {
               waiting = true
-              question = { text: summary?.needs_action || summary?.status_detail || fallback, context: '', options: [] }
+              // What it wants of you, and its own closing words with what to do and why.
+              question = { text: summary?.needs_action || summary?.status_detail || fallback, context: st.prose ?? '', options: [] }
             } else if (!fits && !st.boxed) {
               const guess = classify(st.prose ?? '')
               waiting = guess.waiting
-              if (waiting) question = { text: guess.snippet || fallback, context: '', options: [] }
+              if (waiting) question = { text: guess.snippet || fallback, context: st.prose ?? '', options: [] }
             }
           } else if (ending?.state === 'answered') {
             // Something came after its last reply: on its way, nothing it asked waits.
@@ -758,7 +760,12 @@ type Question = {
   context: string
   options: string[]
   // A dialog of several questions: each asked on its own („<title>“ (i/n): …) with its own buttons.
-  parts?: { question: string; options: string[] }[]
+  parts?: { question: string; options: string[]; descriptions?: string[] }[]
+  // The window's own words under its buttons, in their order.
+  descriptions?: string[]
+  // Not a question: the window waits for you to do something (no buttons, no question mark);
+  // Centrála offers „Hotovo“ for it.
+  task?: boolean
   since: string
   // Reported by the window itself: answered through its plugin ('plugin'), else by a message.
   askId?: string
@@ -1062,13 +1069,26 @@ const toQuestion = (r: Row): Question => ({
   context: r.question?.context ?? '',
   options: r.question?.options ?? [],
   ...(r.askId && r.question?.parts?.length
-    ? { parts: r.question.parts.map(p => ({ question: p.text, options: p.options })) }
+    ? {
+        parts: r.question.parts.map(p => ({
+          question: p.text,
+          options: p.options,
+          ...(p.descriptions?.length ? { descriptions: p.descriptions } : {}),
+        })),
+      }
     : {}),
+  ...(r.question?.descriptions?.length ? { descriptions: r.question.descriptions } : {}),
+  ...(isTask(r) ? { task: true } : {}),
   since: r.lastActivityAt,
   ...(r.askId ? { askId: r.askId } : {}),
   delivery: r.askId ? 'plugin' : 'message',
 })
 const questionKey = (r: Row) => r.askId || r.turn
+// A window waiting for you to do something, not asking: no buttons, no parts, no question mark.
+const isTask = (r: Row) => {
+  const q = r.question
+  return !!q && !r.askId && !q.options.length && !q.parts?.length && !/\?\s*$/.test(q.text.trim())
+}
 const relays = (r: Row, rows: readonly Row[]) =>
   rows.some(
     c => c.parent === r.id && c.id !== r.id && (c.waiting || (c.isRunning && Date.parse(c.lastActivityAt) > Date.parse(r.lastActivityAt))),

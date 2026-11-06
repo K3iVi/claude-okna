@@ -18,7 +18,13 @@ export type Row = {
   // This PC's waiting windows: the question as the window asked it, with the replies its buttons send.
   // The window this one was forked or started from (its app record says so).
   parent?: string
-  question?: { text: string; context: string; options: string[]; parts?: { text: string; options: string[] }[] }
+  question?: {
+    text: string
+    context: string
+    options: string[]
+    descriptions?: string[]
+    parts?: { text: string; options: string[]; descriptions?: string[] }[]
+  }
   // The question's exact id when the window reported it itself (0.9): Centrála's plugin answers it.
   askId?: string
   // The window has asked for a permission a while: what for (only shown, never answered remotely).
