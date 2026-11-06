@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.1'
+const PLUGIN_VERSION = '0.9.2'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -917,12 +917,32 @@ let askedThisTurn = false
 // Windows this turn's dialogs answered through their own plugin: nothing more is sent to them.
 let delivered = new Set<string>()
 
-// Your answers in a dialog of Centrála, by the window each question names („<title>“ first).
-// "You sent a message instead" answers nothing.
-// The one window a dialog question names („<title>“ first); none when two windows share the title.
+// A short name Centrála's model may use for a long title („MCP Gateway“ for „MCP Gateway pro …“):
+// the title's beginning, cut where a word ends, at least this long.
+const MIN_SHORT_NAME = 6
+
+// The name a dialog question begins with, and the rest after it; the whole title first (it may
+// hold quotes itself), else the text in the first „…“.
+function nameOf(question: string, titles: readonly string[]): { name: string; rest: string } | undefined {
+  const text = question.trimStart()
+  const whole = titles.filter(t => text.startsWith(`„${t}“`)).sort((a, b) => b.length - a.length)[0]
+  if (whole !== undefined) return { name: whole, rest: text.slice(whole.length + 2) }
+  const m = /^„([^“]+)“/.exec(text)
+  return m ? { name: m[1]!.trim(), rest: text.slice(m[0].length) } : undefined
+}
+
+const isShortFor = (name: string, title: string) =>
+  name.length >= MIN_SHORT_NAME && title.startsWith(name) && (title.length === name.length || /[\s—–\-:,(]/.test(title[name.length]!))
+
+// The one window a dialog question names („<title>“ first, or a beginning of the title no other
+// waiting window shares); none when two windows fit.
 function windowOf(question: string): Question | undefined {
-  const named = current.filter(q => question.trimStart().startsWith(`„${q.title}“`))
-  return named.length === 1 && current.filter(q => q.title === named[0]!.title).length === 1 ? named[0] : undefined
+  const named = nameOf(question, current.map(q => q.title))
+  if (!named) return undefined
+  const exact = current.filter(q => q.title === named.name)
+  if (exact.length) return exact.length === 1 ? exact[0] : undefined
+  const short = current.filter(q => isShortFor(named.name, q.title))
+  return short.length === 1 ? short[0] : undefined
 }
 
 // Your answers in a dialog of Centrála, by the window each question names. "You sent a message
@@ -945,7 +965,7 @@ type OpenedItem = { question: string; labels: string[]; part?: number }
 type Opened = { window: Question; items: OpenedItem[] }
 
 const partOf = (question: string, title: string): number | undefined => {
-  const rest = question.trimStart().slice(`„${title}“`.length)
+  const rest = nameOf(question, [title])?.rest ?? ''
   const m = /^\s*\((\d+)\s*\/\s*(\d+)\)/.exec(rest)
   return m ? Number(m[1]) : undefined
 }

@@ -164,7 +164,7 @@ test('the state file rules: what is believed, which answer is taken, how questio
 test('Centrála asks a dialog of several questions part by part and hands all answers back at once', { timeoutMs: 30_000 }, async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const files = new Map<string, { text: string; mtime: number }>()
-  const sessions = [session('w9', 'FW na žádost', true)]
+  const sessions = [session('w9', 'FW na žádost — vygenerovaný pro jednu BMS', true)]
   put(files, RECORD('w9'), { lastAssistantUuid: 'u-9', lastTurnEdgeAt: at(5), lastFocusedAt: at(10) })
   const parts = [
     { text: 'Schvaluješ schéma?', options: ['Schvaluji', 'Jen FW'] },
@@ -192,6 +192,7 @@ test('Centrála asks a dialog of several questions part by part and hands all an
     options: [...parts[i]!.options, 'Později'].map(label => ({ label, description: '' })),
     multiSelect: false,
   })
+  // The model shortens a long title („FW na žádost“): taken while no other window's title fits it.
   const questions = [q(0), q(1)]
   // „Později“ on one part: nothing goes, the whole question keeps waiting.
   answers = { [questions[0]!.question]: 'Schvaluji', [questions[1]!.question]: 'Později' }
@@ -204,12 +205,23 @@ test('Centrála asks a dialog of several questions part by part and hands all an
   // Both answered (one in your own words): handed over together, in the parts' order.
   answers = { [questions[1]!.question]: 'p1', [questions[0]!.question]: 'Jen FW, CRM potom' }
   const out = (await $.tool.call({ tool: 'AskUserQuestion', questions } as never)) as { context?: string[] }
-  expect(out.context?.at(-1)).toMatch(/předal odpověď oknům „FW na žádost“/)
+  expect(out.context?.at(-1)).toMatch(/předal odpověď oknům „FW na žádost — vygenerovaný pro jednu BMS“/)
   expect(readJson(files, ANSWER('w9'))).toMatchObject({
     askId: 'd:t:9',
     text: '1) Jen FW, CRM potom 2) p1',
     parts: [{ text: 'Jen FW, CRM potom', typed: true }, { text: 'p1', typed: false }],
   })
+  // Another window whose title begins alike: the short name fits both, nothing goes.
+  files.delete(ANSWER('w9'))
+  sessions.push(session('w10', 'FW na žádost — druhé', true))
+  put(files, RECORD('w10'), { lastAssistantUuid: 'u-10', lastTurnEdgeAt: at(5), lastFocusedAt: at(10) })
+  put(files, STATE('w10'), state('w10', { phase: 'dialog', since: at(1), beat: clock.now(), ask: { id: 'd:t:10', text: 'Jo?', context: '', options: ['Jo'] } }))
+  put(files, STATE('w9'), state('w9', { phase: 'dialog', since: at(1), beat: clock.now(), ask: { id: 'd:t:9', text: '1) … 2) …', context: '', options: [], parts } }))
+  // (w9 is back in the queue once its handed answer has gone untaken 20 s.)
+  await clock.advance(40_000)
+  expect(queue().waiting.map(w => w.id).sort()).toEqual(['w10', 'w9'])
+  await $.tool.call({ tool: 'AskUserQuestion', questions } as never)
+  expect(files.has(ANSWER('w9'))).toBe(false)
 })
 
 test('a window closes its dialog of several questions with the answers picked in Centrála', { timeoutMs: 30_000 }, async ($, on) => {
@@ -413,6 +425,10 @@ test('Centrála: waits 10 s, answers a reporting window through its plugin, neve
     options: [...labels, 'Později'].map(label => ({ label, description: '' })),
     multiSelect: false,
   })
+  // A short name is never a cut inside a word („Okno je“ for „Okno jedna“).
+  answers = { '„Okno je“: Nasadit?': 'Ano' }
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [q('Okno je', 'Nasadit?', ['Ano', 'Ráno'])] } as never)
+  expect(files.has(ANSWER('w1'))).toBe(false)
   const questions = [q('Okno jedna', 'Nasadit?', ['Ano', 'Ráno']), q('Okno osm', 'Smazat větev?', ['Ano', 'Ne']), q('Dvojče', 'Nasadit?', ['Ano', 'Ráno'])]
   // While the dialog is open, "Okno jedna" is answered in its window and asks something new.
   let open = () => {}
