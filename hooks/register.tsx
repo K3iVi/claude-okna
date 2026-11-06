@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.5'
+const PLUGIN_VERSION = '0.9.6'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -911,6 +911,9 @@ const describeCall = (input: Record<string, unknown>) =>
   String(input.description ?? input.command ?? input.file_path ?? input.url ?? '').replace(/\s+/g, ' ').slice(0, 120)
 
 let isCentralTicking = false
+// Turns of Centrála since its /clear; all it needs is in files, so it clears itself past this.
+let centralTurns = 0
+const CENTRAL_CLEAR_TURNS = 20
 // When a prompt to the central window went out whose turn has not begun yet; 0 when none.
 // One is enough: the turn reads the whole queue. One that never starts a turn is sent again.
 let promptedAt = 0
@@ -1189,6 +1192,10 @@ async function centralTick($: EngineInterface) {
       JSON.stringify(
         {
           at: new Date(now).toISOString(),
+          // This window's turns since its last /clear (or this plugin's load): the skill clears it
+          // itself once they pass CENTRAL_CLEAR_TURNS, so each turn reads a short conversation.
+          turns: centralTurns,
+          clearAt: CENTRAL_CLEAR_TURNS,
           night,
           waiting,
           working: rows.filter(r => r.isRunning).map(brief),
@@ -1397,6 +1404,7 @@ export const register: Register = on => {
       await setOwn($, 'working')
     }
     if (e.agentId === undefined && (await isCentral($))) {
+      centralTurns++
       picks = new Map()
       delivered = new Set()
       askedThisTurn = false
@@ -1500,6 +1508,7 @@ export const register: Register = on => {
 
   // /clear ends the conversation the question belonged to: the window no longer asks it.
   on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') centralTurns = 0
     if (e.reason === 'clear' && own) {
       approvalCall = undefined
       box = undefined

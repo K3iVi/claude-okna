@@ -100,5 +100,8 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim a za
    Vypnout jen na výslovný pokyn („rc vypni …“) stejně s `enabled: false`.
 
 ## Šetři
-Každý tah tohoto okna platí celý jeho kontext. Odpovídej co nejkratší. Když okno přeroste ~100k tokenů,
-napiš na konec jednou „Doporučuji /clear“ — vše je v souborech, nic se neztratí.
+Každý tah tohoto okna platí celý jeho kontext. Odpovídej co nejkratší. Vše potřebné je v souborech, konverzace
+nic nedrží: je-li v `centrala.json` `turns` ≥ `clearAt` a v tomto tahu už nic nečeká na odpověď (dialog je
+zavřený, odpovědi odeslané), na úplném konci tahu zavolej `clear_session` (`mcp__ccd_session_mgmt__clear_session`,
+načti přes ToolSearch) se `session_id: "self"` a nic dalšího nepiš. Nejde-li to (odmítnuto, Remote Control),
+napiš jednou „Doporučuji /clear“.

@@ -416,6 +416,8 @@ test('Centrála: waits 10 s, answers a reporting window through its plugin, neve
   expect(env.prompts.length).toBe(1)
   await clock.advance(10_000)
   expect(env.prompts.length).toBe(2)
+  // Its own turns since a /clear go with the queue: the skill clears it past `clearAt`.
+  expect(readJson<{ turns: number; clearAt: number }>(files, `${HOME}/.claude/centrala.json`)).toMatchObject({ turns: 1, clearAt: 20 })
   expect(env.prompts[1]?.text).toMatch(/„Okno osm“/)
 
   // The dialog as the skill builds it: each window's own buttons plus „Později“.
