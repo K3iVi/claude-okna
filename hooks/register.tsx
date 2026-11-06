@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.6'
+const PLUGIN_VERSION = '0.9.7'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -493,6 +493,9 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
             // Its turn ended without a question in a box (or was broken off).
             if (st.aborted) {
               // You broke it off: nothing asked waits.
+            } else if (st.peer && !st.boxed) {
+              // A turn another window began (it answered or reported to it): whatever the app makes
+              // of its closing words, it asked you nothing; a question for you goes in a box.
             } else if (blocked) {
               waiting = true
               // What it wants of you, and its own closing words with what to do and why.
@@ -795,6 +798,10 @@ async function readNight($: EngineInterface): Promise<Night | undefined> {
 // What this window last wrote of itself; undefined until its first turn (or a file it may adopt).
 let own: WindowState | undefined
 let ownTurn = ''
+// Whether this turn began from another window's message or a note on a session it started, not
+// from you: its end asks you nothing unless its box does (windows answering each other).
+let ownPeer = false
+const PEER_TURN = /^\s*(?:Another Claude session sent a message|<cross-session-message|<side-sessions-event>|<system-reminder>\s*The (?:session|user's fork) )/
 // This turn's wrap_up box: undefined without one, its question (null: none) with.
 let box: Ask | null | undefined
 // The call whose permission prompt is up, and the open dialog an answer from Centrála may close.
@@ -1399,6 +1406,8 @@ export const register: Register = on => {
     // Whatever begins a turn here (you, Centrála, a notification) answers what the window asked.
     if (e.agentId === undefined) {
       ownTurn = e.turnId
+      // (Centrála's message carries your pick: that turn is yours.)
+      ownPeer = PEER_TURN.test(e.text) && !/from-name="Centr[áa]la"/i.test(e.text)
       box = undefined
       approvalCall = undefined
       await setOwn($, 'working')
@@ -1551,6 +1560,7 @@ export const register: Register = on => {
           await setOwn($, 'done', {
             boxed: box !== undefined,
             prose: proseTail(e.answer ?? ''),
+            ...(ownPeer ? { peer: true } : {}),
             ...(e.reason === 'answer' ? {} : { aborted: true }),
           })
         }

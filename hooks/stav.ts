@@ -41,6 +41,8 @@ export type WindowState = {
   boxed?: boolean
   prose?: string
   aborted?: boolean
+  // 'done': the turn began from another window's message (or a note about one), not from you.
+  peer?: boolean
 }
 
 // What Centrála's plugin leaves for a window: your pick in its dialog, for the question `askId`.

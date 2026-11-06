@@ -531,3 +531,43 @@ test('Centrála gets what it needs to decide: the context, the buttons\' descrip
   expect(queue.find(w => w.id === 'a')?.task).toBeUndefined()
   expect(queue.find(w => w.id === 't')).toMatchObject({ task: true, context: 'Čekám na tvůj zkušební import obou zipů.' })
 })
+
+test('a turn another window began asks you nothing unless its box does', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  mockEnv(on, clock, { self: 'Okno A', sessions: [], files })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const own = () => readJson<WindowState>(files, STATE('self'))
+  const peer = 'Another Claude session sent a message: <cross-session-message from="local_x" from-name="MCP Gateway"> Ohlášení deploye, odpověz hotovo. </cross-session-message>'
+  await $.turn.start({ text: peer, turnId: 't1' })
+  await $.turn.complete({ turnId: 't1', reason: 'answer', answer: 'Poslal jsem „hotovo“. Dál čekám na tvůj zkušební import.', durationMs: 1000, isAborted: false })
+  expect(own()).toMatchObject({ phase: 'done', peer: true })
+  // Centrála's message carries your pick: that turn is yours.
+  await $.turn.start({ text: peer.replace('MCP Gateway', 'Centrála'), turnId: 't2' })
+  await $.turn.complete({ turnId: 't2', reason: 'answer', answer: 'Hotovo.', durationMs: 1000, isAborted: false })
+  expect(own().peer).toBeUndefined()
+  // Your own words: yours.
+  await $.turn.start({ text: 'udělej to', turnId: 't3' })
+  await $.turn.complete({ turnId: 't3', reason: 'answer', answer: 'Hotovo.', durationMs: 1000, isAborted: false })
+  expect(own().peer).toBeUndefined()
+})
+
+test('the panel does not take a turn another window began for a question to you', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const sessions = [session('p', 'Odpověděl oknu')]
+  put(files, RECORD('p'), {
+    lastAssistantUuid: 'u-p',
+    lastTurnEdgeAt: at(5),
+    lastFocusedAt: at(10),
+    postTurnSummary: { status_category: 'blocked', needs_action: "Petr's consent to deploy", summarizes_uuid: 'u-p' },
+  })
+  put(files, STATE('p'), state('p', { phase: 'done', boxed: false, peer: true, prose: 'Poslal jsem „hotovo“.' }))
+  const env = mockEnv(on, clock, { self: 'Toto okno', sessions, files, pane: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const rows = (env.store.get('snapshot') as { rows: { id: string; waiting: boolean }[] }).rows
+  expect(rows.find(r => r.id === 'p')?.waiting).toBe(false)
+})
