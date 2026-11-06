@@ -1,12 +1,12 @@
 ---
 name: centrala
-description: Centrální okno „Centrála“ — ukáže otázky, na které čekají ostatní okna Claude, s jejich vlastními tlačítky, a vybranou odpověď pošle doslova do toho okna; „noc“ zapne noční režim oken, „ráno“ ho vypne a ukáže, co se v noci rozhodlo. Spouští ho plugin okna zprávou „[okna] …“, nebo ručně /centrala.
+description: Centrální okno „Centrála“ — ukáže otázky, na které čekají ostatní okna Claude, s jejich vlastními tlačítky, a vybranou odpověď pošle doslova do toho okna; „noc“ zapne noční režim oken, „ráno“ ho vypne a ukáže, co se v noci rozhodlo; „rc“ zapne oknům Remote Control. Spouští ho plugin okna zprávou „[okna] …“, nebo ručně /centrala.
 ---
 
 # Centrála — rozhodnutí z ostatních oken na jednom místě
 
 Jsi centrální okno. Úkol: ukázat otázky, které čekají v ostatních oknech, nechat uživatele kliknout
-a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic jiného.
+a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim a zapnout oknům Remote Control. Nic jiného.
 
 ## Zakázáno
 - Číst kód, git, logy, přepisy oken. Zdroje jsou jen soubory níže.
@@ -73,7 +73,8 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    zamítnuté okno nech, jak je, a napiš to).
 4. Každému cíli `send_message` s touto zprávou doslova:
    `[noc] Uživatel zapnul noční režim do <HH:MM>. Platí pravidlo „Režim noc“ z CLAUDE.md: vratné věci rozhodni sám, každé rozhodnutí připiš jedním řádkem do ~/.claude/noc-zaznam.md („- HH:MM | <název okna> | <co jsem rozhodl> | <jak vrátit>“) a pokračuj; co potřebuje jeho OK, odlož na ráno a tah ukonči otázkou. Čekal-li jsi na mou odpověď, rozhodni ji teď podle toho pravidla.`
-5. Odpověz jedním řádkem: „Noc do HH:MM: N oken, auto u M.“ V noci tě plugin nebudí; ráno sám.
+5. Každému cíli zapni Remote Control jako u „rc“ níže (ať jdou okna v noci ovládat z mobilu).
+6. Odpověz jedním řádkem: „Noc do HH:MM: N oken, auto u M, Remote Control u K.“ V noci tě plugin nebudí; ráno sám.
 
 ## „ráno“ (uživatel napíše „ráno“, nebo plugin pošle „[okna] Ráno…“)
 1. Přečti `noc.json`; oknům z `okna` vrať `set_session_permission_mode` → `acceptEdits`.
@@ -81,6 +82,16 @@ a jeho volbu poslat do toho okna; na pokyn zapnout a vypnout noční režim. Nic
    (`[<title>](#<id>)`: počet rozhodnutí, to nejdůležitější). Nehodnoť je.
 3. Smaž `noc.json` (`rm` v Bash).
 4. Pokračuj výchozím postupem Otázky (odložené otázky noci jsou ve frontě).
+   Remote Control oken ráno nevypínej.
+
+## „rc“ (uživatel napíše „rc“, „remote“, „zapni remote control“; případně „rc <název>“)
+1. Přečti `centrala.json`. Cíl = okna z `waiting`, `working` a `unread` (každé má `id`); s názvem jen
+   okno z těchto seznamů, jehož `title` název obsahuje (víc shod nebo žádná → napiš je a nic nezapínej).
+2. Každému cíli `set_remote_control` (`mcp__ccd_session_mgmt__set_remote_control`, načti přes ToolSearch)
+   se `session_id` = `id` a `enabled: true`. Uživatel to může schvalovat; zamítnuté nebo „unavailable“
+   okno nech, jak je.
+3. Odpověz jedním řádkem: „Remote Control: zapnuto N (odkazy `[<title>](#<id>)`), nejde M.“
+   Vypnout jen na výslovný pokyn („rc vypni …“) stejně s `enabled: false`.
 
 ## Šetři
 Každý tah tohoto okna platí celý jeho kontext. Odpovídej co nejkratší. Když okno přeroste ~100k tokenů,

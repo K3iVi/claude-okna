@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.3'
+const PLUGIN_VERSION = '0.9.4'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
