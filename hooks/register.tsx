@@ -23,7 +23,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.2'
+const PLUGIN_VERSION = '0.9.3'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -194,6 +194,9 @@ type AppRecord = {
   lastAssistantCliSessionId?: string
   cwd?: string
   originCwd?: string
+  // The window it was forked or started from: told by the app when this one waits on you.
+  spawnedFrom?: { sessionId?: string } | null
+  forkedFromSessionId?: string
 }
 
 // A window whose turn has ended can still be working: subagents it left running in the
@@ -548,7 +551,9 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
         const rcLink = bridge?.length ? `claude://claude.ai/code/${bridge[bridge.length - 1]}` : ''
         // Its turn over but subagents still at work: working, unless it asked you something.
         const background = !running && !waiting && (await worksInBackground($, record, now))
+        const parent = record?.spawnedFrom?.sessionId || record?.forkedFromSessionId
         rows.push({
+          ...(typeof parent === 'string' && parent ? { parent } : {}),
           turn,
           deferred: !running && deferred[s.sessionId] === (turn || act),
           id: s.sessionId,
@@ -1064,6 +1069,10 @@ const toQuestion = (r: Row): Question => ({
   delivery: r.askId ? 'plugin' : 'message',
 })
 const questionKey = (r: Row) => r.askId || r.turn
+const relays = (r: Row, rows: readonly Row[]) =>
+  rows.some(
+    c => c.parent === r.id && c.id !== r.id && (c.waiting || (c.isRunning && Date.parse(c.lastActivityAt) > Date.parse(r.lastActivityAt))),
+  )
 const brief = (r: Row): Brief => ({ id: r.id, title: r.title, link: r.link, since: r.lastActivityAt })
 
 // Whether the window still waits on the question of its reply `turn`, asked of the window itself:
@@ -1146,6 +1155,9 @@ async function centralTick($: EngineInterface) {
       .filter(r => r.waiting && !r.deferred && questionKey(r) && r.question)
       // An answer handed to it is on its way: not asked again unless the window leaves it.
       .filter(r => handed.get(r.id)?.askId !== questionKey(r))
+      // A window whose fork (or a window it started) waits on you, or was answered and works on
+      // since it asked, mostly asks you the same: you answer in the window that wants it.
+      .filter(r => !relays(r, rows))
       .map(toQuestion)
       .filter(q => now - Date.parse(q.since) >= CENTRAL_DELAY_MS)
       .sort((a, b) => Date.parse(a.since) - Date.parse(b.since))

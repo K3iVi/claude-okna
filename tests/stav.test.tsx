@@ -473,3 +473,28 @@ test('Centrála: waits 10 s, answers a reporting window through its plugin, neve
   expect(env.prompts.length).toBe(before + 1)
   expect(queue().waiting.find(w => w.id === 'w8')).toMatchObject({ delivery: 'plugin' })
 })
+
+test('Centrála asks only the window that wants it, not the one it was forked from repeating it', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const sessions = [session('p', 'Rodič'), session('c', 'Fork')]
+  put(files, RECORD('p'), { lastAssistantUuid: 'u-p', lastTurnEdgeAt: at(5), lastFocusedAt: at(10) })
+  put(files, RECORD('c'), { lastAssistantUuid: 'u-c', lastTurnEdgeAt: at(5), lastFocusedAt: at(10), forkedFromSessionId: 'p' })
+  put(files, STATE('p'), state('p', { phase: 'asks', ask: ask('b:t:p', 'Fork čeká: nasadit?', ['Ano']) }))
+  put(files, STATE('c'), state('c', { phase: 'asks', ask: ask('b:t:c', 'Nasadit?', ['Ano', 'Ne']) }))
+  mockEnv(on, clock, { self: 'Centrála', sessions, files })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  on('turn.abort', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(10_000)
+  const queue = () => readJson<{ waiting: { id: string }[] }>(files, `${HOME}/.claude/centrala.json`).waiting.map(w => w.id)
+  expect(queue()).toEqual(['c'])
+  // The fork got its answer and works on: the parent's question is still about it.
+  put(files, STATE('c'), state('c', { phase: 'working', since: clock.now(), beat: clock.now() }))
+  await clock.advance(10_000)
+  expect(queue()).toEqual([])
+  // The fork is done and asks nothing: the parent's own question is yours again.
+  put(files, STATE('c'), state('c', { phase: 'done', since: clock.now(), beat: clock.now(), boxed: true, prose: 'Hotovo.' }))
+  await clock.advance(10_000)
+  expect(queue()).toEqual(['p'])
+})

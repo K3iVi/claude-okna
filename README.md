@@ -62,6 +62,8 @@ Ostatní okna dál čekají na tebe, nic se nerozhoduje samo.
   Model Centrály v tu chvíli nic neposílá. Dialog s víc otázkami (0.9.1+) ukáže Centrála po
   částech („Název“ (1/2), (2/2)), každou s jejími tlačítky; okno dostane odpovědi až na všechny
   najednou — „Později“ u kterékoli znamená, že čeká dál.
+- Když se ptá fork okna (nebo okno, které jiné spustilo) a jeho rodič otázku zopakuje, Centrála
+  ukáže jen otázku forku; rodičovu zase, až fork doběhne a na nic nečeká (0.9.3+).
 - Otázka se v Centrále ukáže, až 10 s trvá: když odpovíš rovnou v okně, Centrála ji vůbec neukáže.
 - Okno, které čeká na schválení nástroje, Centrála jen vypíše; schválit jde jen v okně.
 - Zatím jen okna tohoto PC.
