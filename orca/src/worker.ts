@@ -3,17 +3,21 @@
 // window takes it within seconds, and only while the window still asks that question.
 import { execFile } from 'node:child_process'
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 
-import { agentsOfPs, answerFor, parseState, waitingOf } from './fronta'
+import { STALE_MS, agentsOfPs, answerFor, parseState, waitingOf } from './fronta'
 import type { Agent, Waiting, WindowState } from './fronta'
 
 const STATE_DIR = join(homedir(), '.claude', 'okna-stav')
 const ANSWER_DIR = join(STATE_DIR, 'odpovedi')
 const STATES_MS = 3_000
 const AGENTS_MS = 10_000
+
+// Orca takes only plain JSON from a worker: a field left undefined (a question without parts) is refused.
+const plain = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
 export type Io = {
   now: () => number
@@ -38,9 +42,28 @@ const nodeIo: Io = {
   },
   ps: () =>
     new Promise((resolve, reject) => {
-      const orca = process.env.ORCA_CLI_COMMAND || 'orca'
-      execFile(orca, ['worktree', 'ps', '--json'], { timeout: 8_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
-        if (err) reject(err)
+      // The CLI ships beside the app the worker runs in (resources/bin); "orca" on PATH may be the app itself.
+      const beside = join(dirname(process.execPath), 'resources', 'bin', process.platform === 'win32' ? 'orca.exe' : 'orca')
+      const orca = process.env.ORCA_CLI_COMMAND || (existsSync(beside) ? beside : 'orca')
+      // The worker runs in Orca's own Node with a bare environment: without ELECTRON_*/NODE_* (they
+      // would make the CLI load the wrong script) and with the folders the CLI finds Orca by.
+      const home = homedir()
+      const env: Record<string, string> = {
+        ...Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === 'string' && !/^(ELECTRON_|NODE_)/i.test(e[0]))),
+      }
+      env.USERPROFILE ??= home
+      env.APPDATA ??= join(home, 'AppData', 'Roaming')
+      env.LOCALAPPDATA ??= join(home, 'AppData', 'Local')
+      env.SystemRoot ??= 'C:\\Windows'
+      execFile(orca, ['worktree', 'ps', '--json'], { env, timeout: 8_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+        // The CLI answers its own failures as JSON on stdout.
+        let why = err?.message ?? ''
+        try {
+          why = (JSON.parse(stdout) as { error?: { message?: string } }).error?.message ?? why
+        } catch {
+          // not JSON: the process message stands
+        }
+        if (err) reject(new Error(why.trim().slice(0, 300)))
         else {
           try {
             resolve(JSON.parse(stdout))
@@ -54,6 +77,7 @@ const nodeIo: Io = {
 
 export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
   let agents: Agent[] = []
+  let agentsAt = -Infinity
   let states: WindowState[] = []
   let note = ''
   let last = ''
@@ -71,6 +95,7 @@ export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
   async function readAgents() {
     try {
       agents = agentsOfPs(await io.ps())
+      agentsAt = io.now()
       note = ''
     } catch (error) {
       note = `Seznam oken z Orcy se nepodařilo načíst: ${String((error as Error)?.message ?? error).slice(0, 160)}`
@@ -82,11 +107,20 @@ export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
     const key = JSON.stringify([waiting, note])
     if (key === last) return
     last = key
-    orca.panels.post('fronta.changed', { waiting, note })
+    orca.panels.post('fronta.changed', plain({ waiting, note }))
+  }
+
+  // Orca may pause the worker's timers while no panel is open, so a request reads anew whatever is
+  // old: a window started meanwhile is missing from the agents read before.
+  async function refresh() {
+    await readStates().catch(() => undefined)
+    const unknown = states.some(st => io.now() - st.beat <= STALE_MS && !agents.some(a => `orca-${a.sessionId}` === st.id))
+    if (unknown && io.now() - agentsAt >= AGENTS_MS / 5) await readAgents()
+    else if (io.now() - agentsAt >= AGENTS_MS) await readAgents()
   }
 
   async function answer(input: { id: string; askId: string; picks: { text: string; typed: boolean }[] }) {
-    await readStates()
+    await refresh()
     const w = listAll().find(x => x.id === input.id)
     // The window moved on since the panel drew it: its question is no longer this one.
     if (!w || w.askId !== input.askId) return { ok: false, reason: 'Okno se mezitím posunulo dál, otázka už neplatí.' }
@@ -103,7 +137,8 @@ export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
     readAgents,
     publish,
     answer,
-    get: () => ({ waiting: list(), note }),
+    refresh,
+    get: () => plain({ waiting: list(), note }),
   }
 }
 
@@ -117,7 +152,7 @@ export function deactivate(): void {
 export default function activate(orca: OrcaWorkerApi): void {
   const c = createCentrala(orca)
   const tickStates = async () => {
-    await c.readStates().catch(() => undefined)
+    await c.refresh()
     c.publish()
   }
   const tickAgents = async () => {
@@ -129,7 +164,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   timers = [setInterval(() => void tickStates(), STATES_MS), setInterval(() => void tickAgents(), AGENTS_MS)]
 
   orca.panels.handle('fronta.get', async () => {
-    await c.readStates().catch(() => undefined)
+    await c.refresh()
     return c.get()
   })
   orca.panels.handle('fronta.answer', async input => c.answer(input))
