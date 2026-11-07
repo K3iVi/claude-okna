@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 2,
+  "id": "centrala",
+  "name": "Centrála",
+  "version": "0.1.0",
+  "description": "Otázky, na které čekají okna Claude, s jejich tlačítky; odpověď doručí plugin Okna v okně.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "centrala",
+        "title": "Centrála",
+        "icon": "bell",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ]
+  },
+  "capabilities": [
+    { "kind": "storage:own" },
+    { "kind": "workspace:write" }
+  ]
+}

@@ -99,7 +99,21 @@ export function parseAnswer(text: string): Answer | undefined {
 
 // Whether the window takes the answer: for the question it asks now, one of its buttons or what you
 // typed yourself in Centrála's dialog.
+// A reply to a turn that ended without buttons (Orca's chat has no wrap_up box: a window there asks
+// in its closing prose). Named by the turn and when it ended, so it never fits a later turn.
+export const replyId = (state: Pick<WindowState, 'turn' | 'since'>) => `t:${state.turn}:${state.since}`
+
+// The id an answer for this state must carry; undefined while the window asks nothing.
+export function askIdOf(state: WindowState | undefined): string | undefined {
+  if (!state) return undefined
+  if (state.phase === 'asks' || state.phase === 'dialog') return state.ask?.id
+  if (state.phase === 'done' && !state.peer) return replyId(state)
+  return undefined
+}
+
 export function acceptsAnswer(state: WindowState | undefined, answer: Answer): boolean {
+  // A finished turn takes only what you wrote yourself, as one message.
+  if (state?.phase === 'done') return !state.peer && answer.askId === replyId(state) && answer.typed && !answer.parts
   if (!state || (state.phase !== 'asks' && state.phase !== 'dialog') || !state.ask) return false
   if (state.ask.id !== answer.askId) return false
   const parts = state.ask.parts

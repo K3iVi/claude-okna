@@ -35,7 +35,7 @@ const session = (id: string, title: string, isRunning = false): Session => ({
   link: `claude://claude.ai/epitaxy/${id}`,
 })
 
-function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; sessions: Session[]; files: Map<string, { text: string; mtime: number }>; pane?: boolean; noDesktop?: boolean }) {
+function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; sessions: Session[]; files: Map<string, { text: string; mtime: number }>; pane?: boolean; noDesktop?: boolean; orca?: string }) {
   const { files } = opts
   const store = new Map<string, unknown>()
   const norm = (p: string) => p.replace(/\\/g, '/')
@@ -58,6 +58,8 @@ function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; ses
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', (_, e) => {
     const cmd = e.argv.join(' ')
+    if (cmd.includes('ORCA_AGENT_SESSION_ID')) return { value: { exitCode: 0, stdout: `${opts.orca ?? '%ORCA_AGENT_SESSION_ID%'}
+`, stderr: '' } }
     const out = cmd.includes('USERPROFILE') ? HOME : cmd.includes('LOCALAPPDATA') ? 'C:/L' : cmd.includes('COMPUTERNAME') ? 'PC' : ''
     return { value: { exitCode: 0, stdout: `${out}\r\n`, stderr: '' } }
   })
@@ -591,4 +593,45 @@ test('without the Claude desktop app (a terminal, Orca) the panel stays closed a
   const res = (await $.command.run({ command: 'okna', args: '' } as never)) as { text?: string }
   expect(res.text).toContain('Claude desktop')
   expect(env.opened).toEqual([])
+})
+
+test('in Orca (no desktop app) a window reports under its Orca id and takes answers there', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const env = mockEnv(on, clock, { self: 'Okno A', sessions: [], files, noDesktop: true, orca: 'claude_ab12cd34' })
+  on('tool.call', async (_, e) => {
+    if (e.tool === 'AskUserQuestion') await new Promise(() => undefined)
+    return { result: {}, text: 'ok' }
+  })
+  await $.session.start({ cwd: '/', surface: null as never, isInteractive: false })
+  await clock.settle()
+  const ID = 'orca-claude_ab12cd34'
+  const own = () => readJson<WindowState>(files, STATE(ID))
+  // The panel stays closed (it needs the app), but the window's state is written.
+  expect(env.opened).toEqual([])
+  await $.turn.start({ text: 'dál', turnId: 't1' })
+  expect(own().phase).toBe('working')
+  // Its own dialog: an answer picked in Orca's Centrála closes it.
+  const opt = (label: string) => ({ label, description: '' })
+  const questions = [{ question: 'Nasadit?', header: 'N', options: [opt('Ano'), opt('Ne')], multiSelect: false }]
+  const dialog = $.tool.call({ tool: 'AskUserQuestion', questions, tool_use_id: 'tu1' } as never) as Promise<{ result?: { answers?: Record<string, string> } }>
+  for (let i = 0; i < 100 && own().phase !== 'dialog'; i++) await clock.advance(10)
+  put(files, ANSWER(ID), { askId: own().ask!.id, text: 'Ano', typed: false, at: NOW }, NOW + 1)
+  await clock.advance(3_000)
+  expect((await dialog).result?.answers).toEqual({ 'Nasadit?': 'Ano' })
+  // A turn that ends asking in prose: your own words go in as your message, once.
+  await $.turn.complete({ turnId: 't1', reason: 'answer', answer: 'Hotovo. Mám pokračovat?' } as never)
+  expect(own()).toMatchObject({ phase: 'done', prose: 'Hotovo. Mám pokračovat?' })
+  const stale = { askId: `t:t0:${own().since}`, text: 'Ano', typed: true, at: NOW }
+  put(files, ANSWER(ID), stale, NOW + 2)
+  await clock.advance(3_000)
+  expect(env.prompts).toEqual([])
+  // A button pick (not typed) never stands in for your words.
+  put(files, ANSWER(ID), { askId: `t:t1:${own().since}`, text: 'Ano', typed: false, at: NOW }, NOW + 3)
+  await clock.advance(3_000)
+  expect(env.prompts).toEqual([])
+  put(files, ANSWER(ID), { askId: `t:t1:${own().since}`, text: 'Ano, pokračuj', typed: true, at: NOW }, NOW + 4)
+  await clock.advance(3_000)
+  expect(env.prompts).toEqual([{ text: 'Ano, pokračuj', asUser: true }])
+  expect(own().phase).toBe('working')
 })

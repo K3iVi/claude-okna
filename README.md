@@ -104,6 +104,23 @@ v nastavený čas (výchozí 7:00) nebo na **„ráno“** vrátí oprávnění,
 Okna se řídí pravidlem „Režim noc“ ve tvém `CLAUDE.md` — sepiš si do něj, co smí rozhodnout sama
 (kód, testy, commity…) a co nikdy (nasazení, zprávy ven, mazání…).
 
+## Orca
+
+V Orce aplikace Claude chybí, takže panel Okna
+zůstane zavřený. Plugin v okně ale od 0.9.9 dál hlásí stav okna pod jeho id z Orcy
+(`okna-stav/orca-<ORCA_AGENT_SESSION_ID>.json`) a bere odpovědi, které mu tam někdo nechá.
+
+Centrálu v Orce dělá plugin Orcy ve složce [`orca/`](orca/), bez modelu, takže provoz nestojí tokeny:
+
+- panel **Centrála** ukazuje okna (chaty Orcy; agent v terminálu zatím ne), která čekají: dialog s volbami (tlačítka okna), otázku na konci
+  odpovědi (pole pro vlastní odpověď) a čekání na schválení nástroje (jen se ukáže);
+- stisk tlačítka zapíše odpověď a plugin v okně ji do pár sekund vloží jako tvoji zprávu, nebo zavře
+  dialog. Bere ji jen tehdy, když se okno ptá pořád na totéž;
+- **Později** otázku schová, dokud se okno nezeptá znovu; **Otevřít okno** ukáže jeho workspace.
+
+Instalace: plugin Okna (výše) do oken a v Orce `orca plugin dev load <cesta>/orca` (Orca se zeptá na
+schválení). Noc, ráno a Remote Control v Orce zatím nejsou.
+
 ## Víc počítačů
 
 Pracuješ-li na dvou PC, panel umí ukázat i okna druhého počítače — vlastní sekce s názvem PC

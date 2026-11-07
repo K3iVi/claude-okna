@@ -11,6 +11,7 @@ import {
   STATE_DIR,
   STATE_VERSION,
   acceptsAnswer,
+  askIdOf,
   askOfBox,
   askOfDialog,
   dialogResult,
@@ -23,7 +24,7 @@ import {
 import type { Answer, Ask, PartAnswer, Phase, WindowState } from './stav'
 
 // Written into this window's state file: the readers know which rules wrote it.
-const PLUGIN_VERSION = '0.9.7'
+const PLUGIN_VERSION = '0.9.9'
 // Centrála puts a question to you once it has stood this long: one you answer in its window
 // right away never shows up there.
 const CENTRAL_DELAY_MS = 10_000
@@ -107,6 +108,19 @@ let inFlight: { force: boolean; done: Promise<Row[] | undefined> } | undefined
 // This window's own id and title; '' until known.
 let selfId = ''
 let selfTitle = ''
+// In an Orca chat or terminal (no Claude desktop app): Orca's id of this agent session. The window
+// then reports its own state and takes answers under `orca-<id>`, for Orca's Centrála panel.
+let orcaId = ''
+const ORCA_ID = /^[\w-]{6,120}$/
+
+// Only once the desktop app is known to be absent: inside the app its own id wins.
+async function detectOrca($: EngineInterface): Promise<boolean> {
+  const id = await envVar($, 'ORCA_AGENT_SESSION_ID').catch(() => '')
+  if (!ORCA_ID.test(id)) return false
+  orcaId = id
+  selfId = `orca-${id}`
+  return true
+}
 
 async function findSelf($: EngineInterface): Promise<Session | undefined> {
   const res = await $.mcp.call(SESSIONS, 'get_session', { session_id: 'self' })
@@ -912,6 +926,12 @@ async function takeAnswer($: EngineInterface) {
     answerMtime = stat.mtimeMs
     return
   }
+  // In Orca another process may share this id (one started from the window inherits its
+  // ORCA_AGENT_SESSION_ID): an answer not for the question here is left for the window it fits.
+  if (orcaId && askIdOf(own) !== answer.askId) {
+    answerMtime = stat.mtimeMs
+    return
+  }
   await $.fs.write(path, '{}')
   answerMtime = (await $.fs.stat(path).catch(() => undefined))?.mtimeMs ?? stat.mtimeMs
   if (!acceptsAnswer(own, answer)) {
@@ -923,7 +943,7 @@ async function takeAnswer($: EngineInterface) {
     return
   }
   // You wrote in the window meanwhile: that is the answer, not this one.
-  if (!own || own.phase !== asked.phase || own.since !== asked.since || own.ask?.id !== answer.askId) return
+  if (!own || own.phase !== asked.phase || own.since !== asked.since || askIdOf(own) !== answer.askId) return
   await setOwn($, 'working')
   const wrote = own
   const sent = await $.prompt.submit({ text: answer.text, asUser: true }).catch(() => ({ drop: 'error' }))
@@ -1415,7 +1435,7 @@ export const register: Register = on => {
     })
     // An answer from Centrála is taken within seconds (a stat of one small file).
     $.clock.every(ANSWER_CHECK_MS, async () => {
-      if (desktop === false) return
+      if (desktop === false && !orcaId) return
       // The beat here, not behind a poll that may take long.
       await beatOwn($).catch(() => undefined)
       await checkAnswer($).catch(() => undefined)
@@ -1426,7 +1446,7 @@ export const register: Register = on => {
     if (await probeDesktop($)) {
       await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
       void refresh($)
-    }
+    } else if (desktop === false && (await detectOrca($))) void adoptOwn($)
     return next(e)
   })
 
