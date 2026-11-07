@@ -117,6 +117,22 @@ async function findSelf($: EngineInterface): Promise<Session | undefined> {
   return self
 }
 
+// Without the Claude desktop app (Claude Code in a terminal, Orca) its session server is absent:
+// the panel then stays closed and the plugin idles, checking again now and then.
+const NO_DESKTOP = /no connected MCP tool|no implementation for mcp.call/
+let desktop: boolean | undefined
+
+async function probeDesktop($: EngineInterface): Promise<boolean> {
+  try {
+    const res = await $.mcp.call(SESSIONS, 'get_session', { session_id: 'self' })
+    desktop = !(res.isError && NO_DESKTOP.test(textOf(res)))
+    if (desktop && !res.isError) await findSelf($)
+  } catch (error) {
+    desktop = !NO_DESKTOP.test(String(error))
+  }
+  return desktop
+}
+
 async function centralTitle($: EngineInterface): Promise<RegExp> {
   try {
     return new RegExp((await readConfig($)).central || CENTRAL_TITLE, 'i')
@@ -616,6 +632,11 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
       await $.store.set('snapshot', { at: await $.clock.now(), rows, info: '', remote, sync })
       return rows
     } catch (error) {
+      if (NO_DESKTOP.test(String(error))) {
+        desktop = false
+        await $.ui.close({ id: PANE })
+        return
+      }
       await update($, infoAtom, () => `Chyba: ${String(error).slice(0, 200)}`)
     }
 }
@@ -1380,6 +1401,13 @@ export const register: Register = on => {
     // The title is read again each minute: a window renamed "Centrála" becomes the central one.
     let ticks = 0
     $.clock.every(POLL_MS, async () => {
+      if (desktop === false) {
+        if (ticks++ % 6 === 0 && (await probeDesktop($))) {
+          await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
+          void refresh($)
+        }
+        return
+      }
       if (ticks++ % 6 === 0) await findSelf($).catch(() => undefined)
       // The central window polls itself; the others share one poll through the store.
       if (await isCentral($)) await centralTick($)
@@ -1387,6 +1415,7 @@ export const register: Register = on => {
     })
     // An answer from Centrála is taken within seconds (a stat of one small file).
     $.clock.every(ANSWER_CHECK_MS, async () => {
+      if (desktop === false) return
       // The beat here, not behind a poll that may take long.
       await beatOwn($).catch(() => undefined)
       await checkAnswer($).catch(() => undefined)
@@ -1394,8 +1423,10 @@ export const register: Register = on => {
     void adoptOwn($)
     await update($, barAtom, () => false)
     if ((await $.store.get('bar')) === true) await update($, barAtom, () => true)
-    await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
-    void refresh($)
+    if (await probeDesktop($)) {
+      await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
+      void refresh($)
+    }
     return next(e)
   })
 
@@ -1582,6 +1613,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'okna' }, async $ => {
+    if (!(await probeDesktop($))) return { text: 'Okna fungují jen v aplikaci Claude desktop (tady chybí její seznam oken).' }
     await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
     await refresh($, true)
     const info = [await read($, infoAtom), await read($, syncAtom)].filter(Boolean).join('\n')

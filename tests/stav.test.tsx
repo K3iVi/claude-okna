@@ -35,7 +35,7 @@ const session = (id: string, title: string, isRunning = false): Session => ({
   link: `claude://claude.ai/epitaxy/${id}`,
 })
 
-function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; sessions: Session[]; files: Map<string, { text: string; mtime: number }>; pane?: boolean }) {
+function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; sessions: Session[]; files: Map<string, { text: string; mtime: number }>; pane?: boolean; noDesktop?: boolean }) {
   const { files } = opts
   const store = new Map<string, unknown>()
   const norm = (p: string) => p.replace(/\\/g, '/')
@@ -44,7 +44,12 @@ function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; ses
   const prompts: { text: string; asUser?: boolean }[] = []
   const text = (value: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(value) }], isError: false } })
   on('command.register', () => ({ value: { command: 'okna' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const opened: string[] = []
+  on('ui.open', (_, e) => {
+    opened.push((e as { id: string }).id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: opts.pane ? [{ id: 'okna', title: 'Okna', isShown: true, isFocused: false }] : [] }))
   on('ui.toast', (_, e) => {
     toasts.push(String((e as { text?: unknown }).text ?? e))
@@ -96,13 +101,14 @@ function mockEnv(on: On, clock: { now: () => number }, opts: { self: string; ses
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
-  on('mcp.call', (_, e) => {
+  on('mcp.call', (_, e, next) => {
+    if (opts.noDesktop) return next(e)
     const id = (e.args as { session_id?: string }).session_id
     if (e.tool === 'list_sessions') return text(opts.sessions)
     if (e.tool === 'get_session') return text(id === 'self' ? session('self', opts.self, true) : opts.sessions.find(s => s.sessionId === id))
     return { value: { content: [{ type: 'text', text: '' }], isError: false } }
   })
-  return { store, toasts, prompts }
+  return { store, toasts, prompts, opened }
 }
 
 const put = (files: Map<string, { text: string; mtime: number }>, path: string, value: unknown, mtime = NOW) =>
@@ -570,4 +576,19 @@ test('the panel does not take a turn another window began for a question to you'
   await clock.settle()
   const rows = (env.store.get('snapshot') as { rows: { id: string; waiting: boolean }[] }).rows
   expect(rows.find(r => r.id === 'p')?.waiting).toBe(false)
+})
+
+test('without the Claude desktop app (a terminal, Orca) the panel stays closed and says why', { timeoutMs: 30_000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const files = new Map<string, { text: string; mtime: number }>()
+  const env = mockEnv(on, clock, { self: 'Okno A', sessions: [], files, noDesktop: true })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(70_000)
+  await clock.settle()
+  expect(env.opened).toEqual([])
+  expect(files.has(STATE('self'))).toBe(false)
+  const res = (await $.command.run({ command: 'okna', args: '' } as never)) as { text?: string }
+  expect(res.text).toContain('Claude desktop')
+  expect(env.opened).toEqual([])
 })
