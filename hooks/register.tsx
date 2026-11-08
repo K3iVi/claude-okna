@@ -159,8 +159,10 @@ const isCentral = async ($: EngineInterface) => selfTitle !== '' && (await centr
 
 const notSelf = (rows: Row[]) => rows.filter(r => r.id !== selfId)
 
+// Only forms that address you: "schválíš", not the infinitive "schválit", which also describes what
+// someone else must do ("kdo panel má, musí ho znovu schválit").
 const WAIT_RE =
-  /(?<!\p{L})(nasaď|schválíš|schválit|tvoje ok|tvé ok|čekám na tebe|čeká na tebe|potřebuju od tebe|potřebuji od tebe|rozhodni|vyber si|mám to udělat|mám pokračovat)(?!\p{L})/iu
+  /(?<!\p{L})(nasaď|schválíš|tvoje ok|tvé ok|čekám na tebe|čeká na tebe|potřebuju od tebe|potřebuji od tebe|rozhodni|vyber si|mám to udělat|mám pokračovat)(?!\p{L})/iu
 
 function textOf(result: { content: { type: string; text?: string }[] }): string {
   return result.content.map(block => (block.type === 'text' ? block.text ?? '' : '')).join('')
@@ -184,7 +186,8 @@ function classify(text: string): { waiting: boolean; snippet: string } {
   if (!text) return { waiting: false, snippet: '' }
   const lines = text
     .split('\n')
-    .map(line => line.replace(/^[-*>#\s]+/, '').replace(/\*\*/g, '').trim())
+    // Code and links say nothing about what is asked: a "?" in `a?b` or a URL is no question.
+    .map(line => line.replace(/^[-*>#\s]+/, '').replace(/\*\*/g, '').replace(/`[^`]*`/g, '…').replace(/https?:\/\/\S+/g, '…').trim())
     .filter(Boolean)
     // The closing commit/push status lines say nothing about what is asked.
     // (Not \b: it is ASCII-only and finds no edge after the "é" of these words.)
@@ -192,7 +195,11 @@ function classify(text: string): { waiting: boolean; snippet: string } {
   // Only the closing lines count: a question quoted mid-reply is not one for you.
   const closing = lines.slice(-3)
   const waiting = closing.some(line => /\?$/.test(line) || WAIT_RE.test(line))
-  const pick = closing.slice().reverse().find(line => line.includes('?')) ?? closing[closing.length - 1] ?? ''
+  const pick =
+    closing.slice().reverse().find(line => /\?$/.test(line)) ??
+    closing.slice().reverse().find(line => WAIT_RE.test(line)) ??
+    closing[closing.length - 1] ??
+    ''
   return { waiting, snippet: pick.length > 160 ? `${pick.slice(0, 157)}…` : pick }
 }
 
