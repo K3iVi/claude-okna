@@ -42,7 +42,7 @@ test('shows the windows waiting and sends the button you press', async () => {
 test('"Později" sets a question aside until the window asks anew', async () => {
   const host = mockHost({ requests: { 'fronta.get': () => ({ waiting: [row({})], note: '' }) } })
   const view = await mount(panel, { host })
-  await view.press({ text: 'Později' })
+  await view.press({ label: 'Později' })
   assert.equal(view.find({ text: 'Nasadit d0e2f81?' }), null)
   await view.post('fronta.changed', { waiting: [row({ askId: 'd:2', text: 'Znovu?' })], note: '' })
   assert.ok(view.find({ text: 'Znovu?' }))

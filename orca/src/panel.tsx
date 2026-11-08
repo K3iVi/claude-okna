@@ -5,9 +5,9 @@ import {
   Badge,
   Box,
   Button,
+  IconButton,
   Image,
   Callout,
-  Card,
   Collapsible,
   EmptyState,
   Input,
@@ -36,6 +36,8 @@ const later = atom<string[]>('later', [], { persist: 'plugin' })
 // A question with parts: what you picked per part so far, by window.
 const partPicks = atom<Record<string, ({ text: string; typed: boolean } | undefined)[]>>({})
 const typedText = atom<Record<string, string>>({})
+// Windows whose field for your own words you opened (the pencil).
+const ownOpen = atom<Record<string, boolean>>({})
 
 const keyOf = (w: Waiting) => `${w.id}|${w.askId}`
 
@@ -104,7 +106,20 @@ function Items({ rows }: { rows: WindowRow[] }) {
   return (
     <List>
       {rows.map(r => (
-        <ListItem title={r.title} description={r.label} onPress={r.workspaceId ? () => open(r) : undefined} />
+        <ListItem onPress={r.workspaceId ? () => open(r) : undefined}>
+          <Box direction="row" justify="between" gap="sm">
+            <Box grow minWidth={0}>
+              <Text size="xs" truncate>
+                {r.title}
+              </Text>
+            </Box>
+            <Box shrink={false}>
+              <Text size="xs" muted={r.group !== 'cache'} tone={r.group === 'cache' ? 'danger' : undefined}>
+                {r.label.replace(/ /g, ' ')}
+              </Text>
+            </Box>
+          </Box>
+        </ListItem>
       ))}
     </List>
   )
@@ -163,91 +178,94 @@ function Own({ w, label }: { w: Waiting; label: string }) {
   )
 }
 
+// One question, compact: the window's name with its actions on one line, the question and its buttons
+// in small type; your own words and the context only when you open them.
 function Question({ w }: { w: Waiting }) {
   const context = w.context && w.context.trim() !== w.text.trim() ? w.context : ''
-  const actions = (
-    <Row gap="xs" wrap>
-      <Button variant="ghost" size="sm" onPress={() => update(later, keys => [...keys, keyOf(w)])}>
-        Později
-      </Button>
-      <Button variant="ghost" size="sm" icon="open-external" onPress={() => open(w)}>
-        Otevřít okno
-      </Button>
-    </Row>
+  const writing = !!read(ownOpen)[w.id] || (w.kind === 'reply' && !w.options.length)
+  const head = (
+    <Box direction="row" justify="between" align="center" gap="xs">
+      <Box grow minWidth={0}>
+        <Text size="xs" muted truncate>
+          {w.title}
+        </Text>
+      </Box>
+      <Box direction="row" shrink={false} gap="none">
+        {w.kind !== 'approval' && w.options.length > 0 && !w.parts?.length && (
+          <IconButton icon="edit" label="Jiná odpověď" variant="ghost" size="xs" onPress={() => update(ownOpen, m => ({ ...m, [w.id]: !m[w.id] }))} />
+        )}
+        <IconButton icon="pause" label="Později" variant="ghost" size="xs" onPress={() => update(later, keys => [...keys, keyOf(w)])} />
+        <IconButton icon="open-external" label="Otevřít okno" variant="ghost" size="xs" onPress={() => open(w)} />
+      </Box>
+    </Box>
   )
   if (w.kind === 'approval') {
     return (
-      <Card title={w.title}>
-        <Stack gap="xs">
-          <Text>Čeká na schválení nástroje (jen v okně): {w.text}</Text>
-          {actions}
-        </Stack>
-      </Card>
+      <Box border radius="md" padding="sm" gap="xs">
+        {head}
+        <Text size="xs">Čeká na schválení nástroje (jen v okně): {w.text}</Text>
+      </Box>
     )
   }
   const picked = read(partPicks)[w.id] ?? []
   return (
-    <Card title={w.title}>
-      <Stack gap="sm">
-        {w.parts?.length ? (
-          <Stack gap="sm">
-            {w.parts.map((p, i) => (
-              <Stack gap="xs">
-                <Text weight="medium">
-                  {i + 1}/{w.parts!.length}: {p.text}
-                </Text>
-                <Row gap="xs" wrap>
-                  {p.options.map(o => (
-                    <Button
-                      size="sm"
-                      variant={picked[i]?.text === o ? 'solid' : 'outline'}
-                      onPress={() =>
-                        update(partPicks, m => {
-                          const next = [...(m[w.id] ?? [])]
-                          next[i] = { text: o, typed: false }
-                          return { ...m, [w.id]: next }
-                        })
-                      }
-                    >
-                      {o}
-                    </Button>
-                  ))}
-                </Row>
-              </Stack>
-            ))}
-            <Button
-              tone="accent"
-              disabled={w.parts.some((_, i) => !picked[i])}
-              onPress={() => void send(w, w.parts!.map((_, i) => picked[i]!))}
-            >
-              Odeslat
-            </Button>
-          </Stack>
-        ) : (
-          <Stack gap="xs">
-            <Text weight="medium">{w.text}</Text>
-            {w.options.length > 0 && (
+    <Box border radius="md" padding="sm" gap="xs">
+      {head}
+      {w.parts?.length ? (
+        <Stack gap="xs">
+          {w.parts.map((p, i) => (
+            <Stack gap="xs">
+              <Text size="xs" weight="medium">
+                {i + 1}/{w.parts!.length}: {p.text}
+              </Text>
               <Row gap="xs" wrap>
-                {w.options.map((o, i) => (
-                  <Button size="sm" tone={i === 0 ? 'accent' : 'neutral'} tooltip={w.descriptions?.[i] || undefined} onPress={() => void send(w, [{ text: o, typed: false }])}>
+                {p.options.map(o => (
+                  <Button
+                    size="xs"
+                    variant={picked[i]?.text === o ? 'solid' : 'outline'}
+                    onPress={() =>
+                      update(partPicks, m => {
+                        const next = [...(m[w.id] ?? [])]
+                        next[i] = { text: o, typed: false }
+                        return { ...m, [w.id]: next }
+                      })
+                    }
+                  >
                     {o}
                   </Button>
                 ))}
               </Row>
-            )}
-            {!w.parts?.length && <Own w={w} label={w.options.length ? 'Jiná odpověď…' : 'Tvoje odpověď…'} />}
-          </Stack>
-        )}
-        {context && (
-          <Collapsible title="Kontext">
-            <Text size="sm" muted>
-              {context}
-            </Text>
-          </Collapsible>
-        )}
-        {actions}
-      </Stack>
-    </Card>
+            </Stack>
+          ))}
+          <Button size="xs" tone="accent" disabled={w.parts.some((_, i) => !picked[i])} onPress={() => void send(w, w.parts!.map((_, i) => picked[i]!))}>
+            Odeslat
+          </Button>
+        </Stack>
+      ) : (
+        <Stack gap="xs">
+          <Text size="xs" weight="medium">
+            {w.text}
+          </Text>
+          {w.options.length > 0 && (
+            <Row gap="xs" wrap>
+              {w.options.map((o, i) => (
+                <Button size="xs" tone={i === 0 ? 'accent' : 'neutral'} tooltip={w.descriptions?.[i] || undefined} onPress={() => void send(w, [{ text: o, typed: false }])}>
+                  {o}
+                </Button>
+              ))}
+            </Row>
+          )}
+          {writing && <Own w={w} label={w.options.length ? 'Jiná odpověď…' : 'Tvoje odpověď…'} />}
+        </Stack>
+      )}
+      {context && (
+        <Collapsible title="Kontext">
+          <Text size="xs" muted>
+            {context}
+          </Text>
+        </Collapsible>
+      )}
+    </Box>
   )
 }
 

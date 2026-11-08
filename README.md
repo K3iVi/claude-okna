@@ -116,13 +116,34 @@ Centrálu v Orce dělá plugin Orcy ve složce [`orca/`](orca/), bez modelu, tak
   odpovědi (pole pro vlastní odpověď) a čekání na schválení nástroje (jen se ukáže);
 - stisk tlačítka zapíše odpověď a plugin v okně ji do pár sekund vloží jako tvoji zprávu, nebo zavře
   dialog. Bere ji jen tehdy, když se okno ptá pořád na totéž;
-- **Později** otázku schová, dokud se okno nezeptá znovu; **Otevřít okno** ukáže jeho workspace.
+- u názvu okna jsou ikony: tužka otevře pole pro vlastní odpověď, pauza (**Později**) otázku schová, dokud se
+  okno nezeptá znovu, šipka (**Otevřít okno**) ukáže jeho workspace;
 - pod otázkami je přehled **Okna** se všemi agenty Orcy (i v terminálu): čeká v okně, končí cache (tah skončil
   před 45–60 min), pracuje, hotovo, sbalené dřívější; barevný proužek ukáže poměr skupin. Přehled jde sbalit a panel
   si to pamatuje. Klik na řádek ukáže workspace okna; konkrétní chat Orca pluginům přepnout nedovolí.
 
-Instalace: plugin Okna (výše) do oken a v Orce `orca plugin dev load <cesta>/orca` (Orca se zeptá na
-schválení). Noc, ráno a Remote Control v Orce zatím nejsou.
+Noc, ráno a Remote Control v Orce zatím nejsou.
+
+### Instalace do Orcy
+
+1. **Plugin Okna do Claude Code** (verze 0.9.9 nebo novější), podle [Instalace](#instalace) níže.
+   Chaty Orcy otevřené před instalací načtou plugin až po `/reload-plugins` (nebo v novém chatu).
+2. **Stáhni repo** (Orca zatím neumí instalovat plugin z podsložky repa na GitHubu):
+   ```
+   git clone https://github.com/K3iVi/claude-okna
+   ```
+3. **Nainstaluj panel do Orcy** ze složky `orca`:
+   ```
+   orca plugin install claude-okna/orca
+   ```
+   Orca nejdřív nic nezapíše a vypíše, co plugin dostane: vlastní proces Node.js s přístupem tvého účtu
+   (čte `~/.claude/okna-stav` a spouští `orca worktree ps`), vlastní úložiště a otevírání workspace.
+   Když souhlasíš, spusť příkaz, který Orca vypíše: totéž s `--approve ap1-…`.
+4. **Panel Centrála** je v pravém postranním panelu Orcy (ikona zvonku), nebo `orca plugin open local.centrala`.
+
+Aktualizace: `git -C claude-okna pull` a znovu krok 3 (nová verze má nový otisk pro `--approve`).
+Pro úpravy panelu: `orca plugin dev load claude-okna/orca` načítá změny ze složky průběžně, testy
+`orca plugin test claude-okna/orca`.
 
 ## Víc počítačů
 

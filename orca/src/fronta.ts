@@ -173,9 +173,9 @@ const minutes = (ms: number) => Math.max(0, Math.floor(ms / 60_000))
 const ago = (ms: number) => {
   const m = minutes(ms)
   if (m < 1) return 'teď'
-  if (m < 60) return `před ${m} min`
+  if (m < 60) return `${m} min`
   const h = Math.floor(m / 60)
-  return h < 24 ? `před ${h} h` : `před ${Math.floor(h / 24)} d`
+  return h < 24 ? `${h} h` : `${Math.floor(h / 24)} d`
 }
 
 // Windows with a question in the cards above are left out; the rest sorted newest first in each group.
@@ -186,10 +186,10 @@ export function overviewOf(agents: Agent[], waitingIds: string[], now: number): 
     if (asked.has(`orca-${a.sessionId}`)) continue
     const age = a.since ? now - a.since : Infinity
     const base = { id: a.sessionId, title: a.title, workspaceId: a.workspaceId, at: a.since }
-    if (a.state === 'working') rows.push({ ...base, group: 'working', label: a.since ? `pracuje ${minutes(age)} min` : 'pracuje' })
-    else if (a.state === 'blocked' || a.state === 'waiting') rows.push({ ...base, group: 'blocked', label: `čeká v okně, ${ago(age)}` })
-    else if (age >= CACHE_FROM_MS && age < CACHE_MS) rows.push({ ...base, group: 'cache', label: `cache končí za ${Math.max(1, Math.ceil((CACHE_MS - age) / 60_000))} min` })
-    else if (age < RECENT_MS) rows.push({ ...base, group: 'done', label: `hotovo ${ago(age)}` })
+    if (a.state === 'working') rows.push({ ...base, group: 'working', label: a.since ? ago(age) : '' })
+    else if (a.state === 'blocked' || a.state === 'waiting') rows.push({ ...base, group: 'blocked', label: ago(age) })
+    else if (age >= CACHE_FROM_MS && age < CACHE_MS) rows.push({ ...base, group: 'cache', label: `za ${Math.max(1, Math.ceil((CACHE_MS - age) / 60_000))} min` })
+    else if (age < RECENT_MS) rows.push({ ...base, group: 'done', label: ago(age) })
     else rows.push({ ...base, group: 'older', label: Number.isFinite(age) ? ago(age) : '' })
   }
   const order: Group[] = ['blocked', 'cache', 'working', 'done', 'older']

@@ -41,11 +41,11 @@ test('the overview: questions above are left out; waiting, cache, working, done 
   assert.deepEqual(
     rows.map(r => [r.id, r.group, r.label]),
     [
-      ['blok', 'blocked', 'čeká v okně, před 1 min'],
-      ['cache', 'cache', 'cache končí za 8 min'],
-      ['prace', 'working', 'pracuje 2 min'],
-      ['hotovo', 'done', 'hotovo před 5 min'],
-      ['stare', 'older', 'před 3 h'],
+      ['blok', 'blocked', '1 min'],
+      ['cache', 'cache', 'za 8 min'],
+      ['prace', 'working', '2 min'],
+      ['hotovo', 'done', '5 min'],
+      ['stare', 'older', '3 h'],
     ],
   )
 })
