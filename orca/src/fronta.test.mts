@@ -54,6 +54,10 @@ test('a question in closing prose; a plain report asks nothing', () => {
   assert.equal(questionOfProse('Hotovo, testy prošly.\n\nMám to nasadit?'), 'Mám to nasadit?')
   assert.equal(questionOfProse('Commit abc je pushnutý. Hotovo.'), undefined)
   assert.equal(questionOfProse('Dlouhý rozbor.\n\nRozhodni, kterou variantu.'), 'Rozhodni, kterou variantu.')
+  // A statement that mentions approving, a "?" in code or a link: no question.
+  assert.equal(questionOfProse('Kdo panel má, musí ho znovu schválit přes `--approve`.\n\n- Nepushnuté: nic, `fb16c98` je na origin/main.'), undefined)
+  assert.equal(questionOfProse('Hotovo, viz `a?b` a https://x.cz/?q=1 tamtéž.'), undefined)
+  assert.equal(questionOfProse('Je to tak? Myslím, že ano. Nasadit teď (nebo zítra)?'), 'Nasadit teď (nebo zítra)?')
 })
 
 test('what waits: dialogs, prose questions, approvals that stood; stale, unknown, peer and pending ones not', () => {

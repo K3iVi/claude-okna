@@ -100,17 +100,26 @@ export function agentsOfPs(json: unknown): Agent[] {
   return agents
 }
 
-// The text that closes a turn asks you something when its last lines hold a question.
+// The text that closes a turn asks you something when its last lines hold a question: a sentence
+// ending with "?", or one that asks in words. Only forms that address you count ("schválíš", not the
+// infinitive "schválit", which also describes what someone else must do).
 const ASKS_RE =
-  /\?|(?<!\p{L})(schválíš|schválit|tvoje ok|tvé ok|čekám na tebe|potřebuju od tebe|potřebuji od tebe|rozhodni|vyber si|mám to udělat|mám pokračovat)(?!\p{L})/iu
+  /(?<!\p{L})(schválíš|tvoje ok|tvé ok|čekám na tebe|potřebuju od tebe|potřebuji od tebe|rozhodni|vyber si|mám to udělat|mám pokračovat)(?!\p{L})/iu
 
-// The question a turn's closing prose ends on: its last sentence with "?" (or its last line).
+// The question a turn's closing prose ends on: its last sentence ending with "?", else its last
+// sentence that asks in words. Code, links and quoted text do not count ("?" in a URL is no question).
 export function questionOfProse(prose: string): string | undefined {
-  const tail = prose.trim().split(/\n\s*\n/).slice(-2).join('\n')
-  if (!ASKS_RE.test(tail)) return undefined
-  const sentences = tail.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/)
-  const q = [...sentences].reverse().find(s => s.includes('?')) ?? sentences.at(-1) ?? tail
-  return q.trim().slice(0, 400)
+  const tail = prose
+    .trim()
+    .split(/\n\s*\n/)
+    .slice(-2)
+    .join('\n')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, '…')
+    .replace(/https?:\/\/\S+/g, '…')
+  const sentences = tail.replace(/\s+/g, ' ').split(/(?<=[.!?:])\s+/)
+  const q = [...sentences].reverse().find(s => /\?["“”'»)]*$/.test(s.trim())) ?? [...sentences].reverse().find(s => ASKS_RE.test(s))
+  return q ? q.trim().slice(0, 400) : undefined
 }
 
 export const replyId = (s: Pick<WindowState, 'turn' | 'since'>) => `t:${s.turn}:${s.since}`
