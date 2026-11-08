@@ -117,6 +117,9 @@ Centrálu v Orce dělá plugin Orcy ve složce [`orca/`](orca/), bez modelu, tak
 - stisk tlačítka zapíše odpověď a plugin v okně ji do pár sekund vloží jako tvoji zprávu, nebo zavře
   dialog. Bere ji jen tehdy, když se okno ptá pořád na totéž;
 - **Později** otázku schová, dokud se okno nezeptá znovu; **Otevřít okno** ukáže jeho workspace.
+- pod otázkami je přehled **Okna** se všemi agenty Orcy (i v terminálu): čeká v okně, končí cache (tah skončil
+  před 45–60 min), pracuje, hotovo, sbalené dřívější; barevný proužek ukáže poměr skupin. Přehled jde sbalit a panel
+  si to pamatuje. Klik na řádek ukáže workspace okna; konkrétní chat Orca pluginům přepnout nedovolí.
 
 Instalace: plugin Okna (výše) do oken a v Orce `orca plugin dev load <cesta>/orca` (Orca se zeptá na
 schválení). Noc, ráno a Remote Control v Orce zatím nejsou.

@@ -8,7 +8,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 
-import { STALE_MS, agentsOfPs, answerFor, parseState, waitingOf } from './fronta'
+import { STALE_MS, agentsOfPs, answerFor, overviewOf, parseState, waitingOf } from './fronta'
 import type { Agent, Waiting, WindowState } from './fronta'
 
 const STATE_DIR = join(homedir(), '.claude', 'okna-stav')
@@ -102,12 +102,16 @@ export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
     }
   }
 
+  // The overview's times are in whole minutes, so it changes (and is posted) at most once a minute.
+  const windows = (waiting: Waiting[]) => overviewOf(agents, waiting.map(w => w.id), io.now())
+
   function publish() {
     const waiting = list()
-    const key = JSON.stringify([waiting, note])
+    const all = windows(waiting)
+    const key = JSON.stringify([waiting, all, note])
     if (key === last) return
     last = key
-    orca.panels.post('fronta.changed', plain({ waiting, note }))
+    orca.panels.post('fronta.changed', plain({ waiting, windows: all, note }))
   }
 
   // Orca may pause the worker's timers while no panel is open, so a request reads anew whatever is
@@ -138,7 +142,10 @@ export function createCentrala(orca: OrcaWorkerApi, io: Io = nodeIo) {
     publish,
     answer,
     refresh,
-    get: () => plain({ waiting: list(), note }),
+    get: () => {
+      const waiting = list()
+      return plain({ waiting, windows: windows(waiting), note })
+    },
   }
 }
 

@@ -1,12 +1,12 @@
 // The panel <-> worker contract, declared once: src/panel.tsx and src/worker.ts both read it.
-import type { Waiting } from './fronta'
+import type { Row, Waiting } from './fronta'
 
 export {}
 
 declare module 'orca' {
   interface PluginRequests {
-    /** The windows waiting now, and why the list may be incomplete. */
-    'fronta.get': { output: { waiting: Waiting[]; note: string } }
+    /** The windows waiting now, all windows at a glance, and why the lists may be incomplete. */
+    'fronta.get': { output: { waiting: Waiting[]; windows: Row[]; note: string } }
     /** Your answer to one window: a button (typed false) or your own words, one per part. */
     'fronta.answer': {
       input: { id: string; askId: string; picks: { text: string; typed: boolean }[] }
@@ -17,6 +17,6 @@ declare module 'orca' {
   }
   interface PluginPanelEvents {
     /** Posted to open panels whenever the list changes. */
-    'fronta.changed': { waiting: Waiting[]; note: string }
+    'fronta.changed': { waiting: Waiting[]; windows: Row[]; note: string }
   }
 }

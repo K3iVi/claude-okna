@@ -26,8 +26,9 @@ export type WindowState = {
   peer?: boolean
 }
 
-// One Orca agent session, as `orca worktree ps --json` lists it.
-export type Agent = { sessionId: string; title: string; workspaceId: string; state: string }
+// One Orca agent session, as `orca worktree ps --json` lists it: a chat (its session id) or an agent
+// in a terminal (its pane key); since = when it entered its state.
+export type Agent = { sessionId: string; title: string; workspaceId: string; state: string; since: number; chat: boolean }
 
 export type Kind = 'dialog' | 'reply' | 'approval'
 export type Waiting = {
@@ -64,7 +65,15 @@ export function sessionOfPane(paneKey: string): string | undefined {
   return /^structured-agent-session-([\w-]+):/.exec(paneKey)?.[1]
 }
 
-type PsAgent = { paneKey?: unknown; state?: unknown; conversationName?: unknown; displayName?: unknown; taskTitle?: unknown }
+type PsAgent = {
+  paneKey?: unknown
+  state?: unknown
+  conversationName?: unknown
+  displayName?: unknown
+  taskTitle?: unknown
+  stateStartedAt?: unknown
+  updatedAt?: unknown
+}
 type PsWorktree = { worktreeId?: unknown; displayName?: unknown; repo?: unknown; agents?: unknown }
 
 export function agentsOfPs(json: unknown): Agent[] {
@@ -73,10 +82,19 @@ export function agentsOfPs(json: unknown): Agent[] {
   const agents: Agent[] = []
   for (const w of Array.isArray(worktrees) ? worktrees : []) {
     for (const a of (Array.isArray(w.agents) ? w.agents : []) as PsAgent[]) {
-      const sessionId = sessionOfPane(String(a.paneKey ?? ''))
-      if (!sessionId) continue
-      const title = [a.conversationName, a.displayName, a.taskTitle, w.repo].find(t => typeof t === 'string' && t.trim()) as string | undefined
-      agents.push({ sessionId, title: title?.trim() ?? sessionId, workspaceId: String(w.worktreeId ?? ''), state: String(a.state ?? '') })
+      const paneKey = String(a.paneKey ?? '')
+      if (!paneKey) continue
+      const sessionId = sessionOfPane(paneKey)
+      const title = [a.conversationName, a.displayName, a.taskTitle, w.displayName, w.repo].find(t => typeof t === 'string' && t.trim()) as string | undefined
+      const since = [a.stateStartedAt, a.updatedAt].find(t => typeof t === 'number') as number | undefined
+      agents.push({
+        sessionId: sessionId ?? paneKey,
+        title: title?.trim() ?? sessionId ?? paneKey,
+        workspaceId: String(w.worktreeId ?? ''),
+        state: String(a.state ?? ''),
+        since: since ?? 0,
+        chat: !!sessionId,
+      })
     }
   }
   return agents
@@ -140,4 +158,42 @@ export function answerFor(w: Waiting, picks: { text: string; typed: boolean }[],
   }
   if (clean.length !== 1) return undefined
   return { askId: w.askId, text: clean[0]!.text, typed: clean[0]!.typed, at }
+}
+
+// The overview of all windows under the questions: what works, what waits in its window, whose cache
+// runs out soon (a turn ended 45–60 min ago: writing now is still cheap) and the rest.
+export const CACHE_FROM_MS = 45 * 60_000
+export const CACHE_MS = 60 * 60_000
+export const RECENT_MS = CACHE_FROM_MS
+
+export type Group = 'working' | 'blocked' | 'cache' | 'done' | 'older'
+export type Row = { id: string; title: string; workspaceId: string; group: Group; label: string }
+
+const minutes = (ms: number) => Math.max(0, Math.floor(ms / 60_000))
+const ago = (ms: number) => {
+  const m = minutes(ms)
+  if (m < 1) return 'teď'
+  if (m < 60) return `před ${m} min`
+  const h = Math.floor(m / 60)
+  return h < 24 ? `před ${h} h` : `před ${Math.floor(h / 24)} d`
+}
+
+// Windows with a question in the cards above are left out; the rest sorted newest first in each group.
+export function overviewOf(agents: Agent[], waitingIds: string[], now: number): Row[] {
+  const asked = new Set(waitingIds)
+  const rows: (Row & { at: number })[] = []
+  for (const a of agents) {
+    if (asked.has(`orca-${a.sessionId}`)) continue
+    const age = a.since ? now - a.since : Infinity
+    const base = { id: a.sessionId, title: a.title, workspaceId: a.workspaceId, at: a.since }
+    if (a.state === 'working') rows.push({ ...base, group: 'working', label: a.since ? `pracuje ${minutes(age)} min` : 'pracuje' })
+    else if (a.state === 'blocked' || a.state === 'waiting') rows.push({ ...base, group: 'blocked', label: `čeká v okně, ${ago(age)}` })
+    else if (age >= CACHE_FROM_MS && age < CACHE_MS) rows.push({ ...base, group: 'cache', label: `cache končí za ${Math.max(1, Math.ceil((CACHE_MS - age) / 60_000))} min` })
+    else if (age < RECENT_MS) rows.push({ ...base, group: 'done', label: `hotovo ${ago(age)}` })
+    else rows.push({ ...base, group: 'older', label: Number.isFinite(age) ? ago(age) : '' })
+  }
+  const order: Group[] = ['blocked', 'cache', 'working', 'done', 'older']
+  return rows
+    .sort((x, y) => order.indexOf(x.group) - order.indexOf(y.group) || y.at - x.at)
+    .map(({ at: _at, ...r }) => r)
 }

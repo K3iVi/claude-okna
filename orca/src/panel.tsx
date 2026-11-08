@@ -3,12 +3,16 @@
 import {
   atom,
   Badge,
+  Box,
   Button,
+  Image,
   Callout,
   Card,
   Collapsible,
   EmptyState,
   Input,
+  List,
+  ListItem,
   plugin,
   read,
   Row,
@@ -19,9 +23,12 @@ import {
   type PanelContext,
 } from 'orca'
 
-import type { Waiting } from './fronta'
+import type { Group, Row as WindowRow, Waiting } from './fronta'
 
 const waiting = atom<Waiting[] | null>(null)
+const windows = atom<WindowRow[]>([])
+// The overview of all windows can be folded away; the panel remembers it.
+const showWindows = atom<boolean>('showWindows', true, { persist: 'plugin' })
 const note = atom('')
 const message = atom('')
 // Questions you set aside here ("Později"), by window and question; they come back when the window asks anew.
@@ -32,8 +39,9 @@ const typedText = atom<Record<string, string>>({})
 
 const keyOf = (w: Waiting) => `${w.id}|${w.askId}`
 
-function apply(payload: { waiting: Waiting[]; note: string }) {
+function apply(payload: { waiting: Waiting[]; windows: WindowRow[]; note: string }) {
   set(waiting, payload.waiting)
+  set(windows, payload.windows ?? [])
   set(note, payload.note)
   // A question that is gone needs no "Později" any more.
   const live = new Set(payload.waiting.map(keyOf))
@@ -47,7 +55,94 @@ async function send(w: Waiting, picks: { text: string; typed: boolean }[]) {
   update(typedText, m => ({ ...m, [w.id]: '' }))
 }
 
-const open = (w: Waiting) => void plugin.request('fronta.open', { workspaceId: w.workspaceId })
+const open = (w: { workspaceId: string }) => void plugin.request('fronta.open', { workspaceId: w.workspaceId })
+
+// Each group has its colour (assets/<group>.png), as in the Okna panel of the Claude app: a square
+// at its heading and its share of the stripe above the list.
+const GROUPS: { group: Group; title: string }[] = [
+  { group: 'blocked', title: 'Čeká v okně' },
+  { group: 'cache', title: 'Končí cache' },
+  { group: 'working', title: 'Pracuje' },
+  { group: 'done', title: 'Hotovo' },
+  { group: 'older', title: 'Dřív' },
+]
+
+function Stripe({ rows }: { rows: WindowRow[] }) {
+  return (
+    <Box direction="row" height={6} radius="full" gap="none">
+      {GROUPS.map(g => {
+        const n = rows.filter(r => r.group === g.group).length
+        return n ? (
+          <Box width={`${Math.max(1, Math.round((100 * n) / rows.length))}%`} height={6}>
+            <Image src={`assets/${g.group}.png`} alt="" size="full" fit="cover" />
+          </Box>
+        ) : null
+      })}
+    </Box>
+  )
+}
+
+function Heading({ group, title, n }: { group: Group; title: string; n: number }) {
+  return (
+    <Row justify="between">
+      <Row gap="xs">
+        <Box width={10} height={10}>
+          <Image src={`assets/${group}.png`} alt="" size="full" fit="cover" />
+        </Box>
+        <Text size="sm" weight="medium">
+          {title}
+        </Text>
+      </Row>
+      <Text size="sm" muted>
+        {String(n)}
+      </Text>
+    </Row>
+  )
+}
+
+function Items({ rows }: { rows: WindowRow[] }) {
+  return (
+    <List>
+      {rows.map(r => (
+        <ListItem title={r.title} description={r.label} onPress={r.workspaceId ? () => open(r) : undefined} />
+      ))}
+    </List>
+  )
+}
+
+// All windows at a glance, grouped by what they need; older ones folded.
+function Windows() {
+  const rows = read(windows)
+  if (!rows.length) return null
+  const count = (g: Group) => rows.filter(r => r.group === g).length
+  const summary = GROUPS.filter(g => g.group !== 'older' && count(g.group))
+    .map(g => `${g.title.toLowerCase()} ${count(g.group)}`)
+    .join(' · ')
+  const older = rows.filter(r => r.group === 'older')
+  return (
+    <Stack gap="xs">
+      <Stripe rows={rows} />
+    <Collapsible title={`Okna (${rows.length})`} description={summary || undefined} open={read(showWindows)} onChange={v => set(showWindows, v)}>
+      <Stack gap="sm">
+        {GROUPS.filter(g => g.group !== 'older').map(g => {
+          const these = rows.filter(r => r.group === g.group)
+          return these.length ? (
+            <Stack gap="xs">
+              <Heading group={g.group} title={g.title} n={these.length} />
+              <Items rows={these} />
+            </Stack>
+          ) : null
+        })}
+        {older.length > 0 && (
+          <Collapsible title={`Dřív (${older.length})`}>
+            <Items rows={older} />
+          </Collapsible>
+        )}
+      </Stack>
+    </Collapsible>
+    </Stack>
+  )
+}
 
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(plugin.on('fronta.changed', apply))
@@ -185,6 +280,7 @@ export default function Panel() {
           Vrátit odložené ({hidden.size})
         </Button>
       )}
+      <Windows />
     </Stack>
   )
 }

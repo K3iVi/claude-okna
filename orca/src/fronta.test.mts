@@ -1,6 +1,6 @@
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 
-import { agentsOfPs, answerFor, questionOfProse, waitingOf } from './fronta.ts'
+import { agentsOfPs, answerFor, overviewOf, questionOfProse, waitingOf } from './fronta.ts'
 import type { WindowState } from './fronta.ts'
 import * as main from './worker.ts'
 import { createCentrala } from './worker.ts'
@@ -14,8 +14,8 @@ const PS = {
         worktreeId: 'r::C:/kod/x',
         repo: 'x',
         agents: [
-          { paneKey: 'structured-agent-session-claude_a1:leaf', state: 'waiting', conversationName: 'Nasazení webu' },
-          { paneKey: 'structured-agent-session-claude_b2:leaf', state: 'done', conversationName: 'Rozbor' },
+          { paneKey: 'structured-agent-session-claude_a1:leaf', state: 'waiting', conversationName: 'Nasazení webu', stateStartedAt: NOW - 30_000 },
+          { paneKey: 'structured-agent-session-claude_b2:leaf', state: 'done', conversationName: 'Rozbor', updatedAt: NOW - 50 * 60_000 },
           { paneKey: 'term-123', state: 'working' },
         ],
       },
@@ -23,11 +23,31 @@ const PS = {
   },
 }
 
-test('agents from orca worktree ps: chats only, titled, with their workspace', () => {
+test('agents from orca worktree ps: chats and terminals, titled, with their workspace and since', () => {
   assert.deepEqual(agentsOfPs(PS), [
-    { sessionId: 'claude_a1', title: 'Nasazení webu', workspaceId: 'r::C:/kod/x', state: 'waiting' },
-    { sessionId: 'claude_b2', title: 'Rozbor', workspaceId: 'r::C:/kod/x', state: 'done' },
+    { sessionId: 'claude_a1', title: 'Nasazení webu', workspaceId: 'r::C:/kod/x', state: 'waiting', since: NOW - 30_000, chat: true },
+    { sessionId: 'claude_b2', title: 'Rozbor', workspaceId: 'r::C:/kod/x', state: 'done', since: NOW - 50 * 60_000, chat: true },
+    { sessionId: 'term-123', title: 'x', workspaceId: 'r::C:/kod/x', state: 'working', since: 0, chat: false },
   ])
+})
+
+test('the overview: questions above are left out; waiting, cache, working, done and older in that order', () => {
+  const a = (id: string, state: string, ago: number) => ({ sessionId: id, title: id, workspaceId: 'w', state, since: NOW - ago, chat: true })
+  const rows = overviewOf(
+    [a('hotovo', 'done', 5 * 60_000), a('stare', 'done', 3 * 3_600_000), a('prace', 'working', 2 * 60_000), a('cache', 'done', 52 * 60_000), a('blok', 'blocked', 60_000), a('otazka', 'waiting', 1_000)],
+    ['orca-otazka'],
+    NOW,
+  )
+  assert.deepEqual(
+    rows.map(r => [r.id, r.group, r.label]),
+    [
+      ['blok', 'blocked', 'čeká v okně, před 1 min'],
+      ['cache', 'cache', 'cache končí za 8 min'],
+      ['prace', 'working', 'pracuje 2 min'],
+      ['hotovo', 'done', 'hotovo před 5 min'],
+      ['stare', 'older', 'před 3 h'],
+    ],
+  )
 })
 
 test('a question in closing prose; a plain report asks nothing', () => {
