@@ -19,10 +19,69 @@
         "entry": "src/panel.tsx",
         "ui": "components"
       }
+    ],
+    "settings": [
+      {
+        "key": "textSize",
+        "title": "Velikost písma",
+        "description": "Malé: co nejvíc na výšku panelu. Normální: čitelnější.",
+        "type": "string",
+        "enum": [
+          "xs",
+          "sm"
+        ],
+        "enumLabels": [
+          "Malé",
+          "Normální"
+        ],
+        "default": "xs"
+      },
+      {
+        "key": "overview",
+        "title": "Přehled oken",
+        "description": "Pod otázkami seznam všech oken (čeká v okně, končí cache, pracuje, hotovo).",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "older",
+        "title": "Dřívější okna v přehledu",
+        "description": "Ukázat i okna, která skončila před víc než 45 min (sbalená pod „Dřív“).",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "stripe",
+        "title": "Barevný proužek",
+        "description": "Poměr skupin oken na první pohled.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "context",
+        "title": "Kontext u otázek",
+        "description": "Text, který okno napsalo před otázkou (rozbalí se klikem).",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "descriptions",
+        "title": "Popisy voleb",
+        "description": "Popis volby při najetí myší na tlačítko.",
+        "type": "boolean",
+        "default": true
+      }
     ]
   },
   "capabilities": [
-    { "kind": "storage:own" },
-    { "kind": "workspace:write" }
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "settings:own"
+    }
   ]
 }

@@ -8,7 +8,6 @@ import {
   IconButton,
   Image,
   Callout,
-  Collapsible,
   EmptyState,
   Input,
   List,
@@ -17,6 +16,7 @@ import {
   read,
   Row,
   set,
+  settings,
   Stack,
   Text,
   update,
@@ -25,10 +25,27 @@ import {
 
 import type { Group, Row as WindowRow, Waiting } from './fronta'
 
+// What the person set in Orca's Settings for this plugin (orca-plugin.json `contributes.settings`).
+type Cfg = { textSize: 'xs' | 'sm'; overview: boolean; older: boolean; stripe: boolean; context: boolean; descriptions: boolean }
+const DEFAULTS: Cfg = { textSize: 'xs', overview: true, older: true, stripe: true, context: true, descriptions: true }
+const cfg = atom<Cfg>(DEFAULTS)
+const sz = () => read(cfg).textSize
+
+async function loadCfg() {
+  const got = (await settings.get().catch(() => ({}))) as Partial<Record<keyof Cfg, unknown>>
+  const next: Cfg = { ...DEFAULTS }
+  if (got.textSize === 'xs' || got.textSize === 'sm') next.textSize = got.textSize
+  for (const k of ['overview', 'older', 'stripe', 'context', 'descriptions'] as const) if (typeof got[k] === 'boolean') next[k] = got[k] as boolean
+  set(cfg, next)
+}
+
 const waiting = atom<Waiting[] | null>(null)
 const windows = atom<WindowRow[]>([])
 // The overview of all windows can be folded away; the panel remembers it.
 const showWindows = atom<boolean>('showWindows', true, { persist: 'plugin' })
+const showOlder = atom<boolean>('showOlder', false, { persist: 'plugin' })
+// Questions whose context you opened.
+const contextOpen = atom<Record<string, boolean>>({})
 const note = atom('')
 const message = atom('')
 // Questions you set aside here ("Později"), by window and question; they come back when the window asks anew.
@@ -73,6 +90,22 @@ const GROUPS: { group: Group; title: string }[] = [
   { group: 'older', title: 'Dřív' },
 ]
 
+// A small header that opens and closes what is under it, in the chosen text size.
+function Fold({ title, note, open, onToggle }: { title: string; note?: string; open: boolean; onToggle: () => void }) {
+  return (
+    <Box direction="row" align="center" gap="xs">
+      <Button variant="ghost" size={sz()} icon={open ? 'collapse' : 'expand'} onPress={onToggle}>
+        {title}
+      </Button>
+      {note && (
+        <Text size={sz()} muted truncate>
+          {note}
+        </Text>
+      )}
+    </Box>
+  )
+}
+
 function Stripe({ rows }: { rows: WindowRow[] }) {
   return (
     <Box direction="row" height={6} radius="full" gap="none">
@@ -95,11 +128,11 @@ function Heading({ group, title, n }: { group: Group; title: string; n: number }
         <Box width={10} height={10}>
           <Image src={`assets/${group}.png`} alt="" size="full" fit="cover" />
         </Box>
-        <Text size="sm" weight="medium">
+        <Text size={sz()} weight="medium">
           {title}
         </Text>
       </Row>
-      <Text size="sm" muted>
+      <Text size={sz()} muted>
         {String(n)}
       </Text>
     </Row>
@@ -113,12 +146,12 @@ function Items({ rows }: { rows: WindowRow[] }) {
         <ListItem onPress={r.workspaceId ? () => open(r) : undefined}>
           <Box direction="row" justify="between" gap="sm">
             <Box grow minWidth={0}>
-              <Text size="xs" truncate>
+              <Text size={sz()} truncate>
                 {r.title}
               </Text>
             </Box>
             <Box shrink={false}>
-              <Text size="xs" muted={r.group !== 'cache'} tone={r.group === 'cache' ? 'danger' : undefined}>
+              <Text size={sz()} muted={r.group !== 'cache'} tone={r.group === 'cache' ? 'danger' : undefined}>
                 {r.label.replace(/ /g, ' ')}
               </Text>
             </Box>
@@ -129,42 +162,51 @@ function Items({ rows }: { rows: WindowRow[] }) {
   )
 }
 
-// All windows at a glance, grouped by what they need; older ones folded.
+// All windows at a glance, grouped by what they need; older ones folded. Settings can hide all of it,
+// the older ones or the stripe.
 function Windows() {
-  const rows = read(windows)
+  const c = read(cfg)
+  const all = read(windows)
+  if (!c.overview) return null
+  const rows = c.older ? all : all.filter(r => r.group !== 'older')
   if (!rows.length) return null
   const count = (g: Group) => rows.filter(r => r.group === g).length
   const summary = GROUPS.filter(g => g.group !== 'older' && count(g.group))
     .map(g => `${g.title.toLowerCase()} ${count(g.group)}`)
     .join(' · ')
   const older = rows.filter(r => r.group === 'older')
+  const open = read(showWindows)
   return (
     <Stack gap="xs">
-      <Stripe rows={rows} />
-    <Collapsible title={`Okna (${rows.length})`} description={summary || undefined} open={read(showWindows)} onChange={v => set(showWindows, v)}>
-      <Stack gap="sm">
-        {GROUPS.filter(g => g.group !== 'older').map(g => {
-          const these = rows.filter(r => r.group === g.group)
-          return these.length ? (
-            <Stack gap="xs">
-              <Heading group={g.group} title={g.title} n={these.length} />
-              <Items rows={these} />
+      {c.stripe && <Stripe rows={rows} />}
+      <Fold title={`Okna (${rows.length})`} note={summary || undefined} open={open} onToggle={() => set(showWindows, !open)} />
+      {open && (
+        <Stack gap="xs">
+          {GROUPS.filter(g => g.group !== 'older').map(g => {
+            const these = rows.filter(r => r.group === g.group)
+            return these.length ? (
+              <Stack gap="none">
+                <Heading group={g.group} title={g.title} n={these.length} />
+                <Items rows={these} />
+              </Stack>
+            ) : null
+          })}
+          {older.length > 0 && (
+            <Stack gap="none">
+              <Fold title={`Dřív (${older.length})`} open={read(showOlder)} onToggle={() => set(showOlder, !read(showOlder))} />
+              {read(showOlder) && <Items rows={older} />}
             </Stack>
-          ) : null
-        })}
-        {older.length > 0 && (
-          <Collapsible title={`Dřív (${older.length})`}>
-            <Items rows={older} />
-          </Collapsible>
-        )}
-      </Stack>
-    </Collapsible>
+          )}
+        </Stack>
+      )}
     </Stack>
   )
 }
 
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(plugin.on('fronta.changed', apply))
+  ctx.subscriptions.push(settings.onDidChange(() => void loadCfg()))
+  void loadCfg()
   void plugin.request('fronta.get').then(apply)
 }
 
@@ -190,16 +232,16 @@ function Question({ w }: { w: Waiting }) {
   const head = (
     <Box direction="row" justify="between" align="center" gap="xs">
       <Box grow minWidth={0}>
-        <Text size="xs" muted truncate>
+        <Text size={sz()} muted truncate>
           {w.title}
         </Text>
       </Box>
       <Box direction="row" shrink={false} gap="none">
         {w.kind !== 'approval' && w.options.length > 0 && !w.parts?.length && (
-          <IconButton icon="edit" label="Jiná odpověď" variant="ghost" size="xs" onPress={() => update(ownOpen, m => ({ ...m, [w.id]: !m[w.id] }))} />
+          <IconButton icon="edit" label="Jiná odpověď" variant="ghost" size={sz()} onPress={() => update(ownOpen, m => ({ ...m, [w.id]: !m[w.id] }))} />
         )}
-        <IconButton icon="pause" label="Později" variant="ghost" size="xs" onPress={() => update(later, keys => [...keys, keyOf(w)])} />
-        <IconButton icon="open-external" label="Otevřít okno" variant="ghost" size="xs" onPress={() => open(w)} />
+        <IconButton icon="pause" label="Později" variant="ghost" size={sz()} onPress={() => update(later, keys => [...keys, keyOf(w)])} />
+        <IconButton icon="open-external" label="Otevřít okno" variant="ghost" size={sz()} onPress={() => open(w)} />
       </Box>
     </Box>
   )
@@ -207,7 +249,7 @@ function Question({ w }: { w: Waiting }) {
     return (
       <Box border radius="md" padding="sm" gap="xs">
         {head}
-        <Text size="xs">Čeká na schválení nástroje (jen v okně): {w.text}</Text>
+        <Text size={sz()}>Čeká na schválení nástroje (jen v okně): {w.text}</Text>
       </Box>
     )
   }
@@ -219,13 +261,13 @@ function Question({ w }: { w: Waiting }) {
         <Stack gap="xs">
           {w.parts.map((p, i) => (
             <Stack gap="xs">
-              <Text size="xs" weight="medium">
+              <Text size={sz()} weight="medium">
                 {i + 1}/{w.parts!.length}: {p.text}
               </Text>
               <Row gap="xs" wrap>
                 {p.options.map(o => (
                   <Button
-                    size="xs"
+                    size={sz()}
                     variant={picked[i]?.text === o ? 'solid' : 'outline'}
                     onPress={() =>
                       update(partPicks, m => {
@@ -241,19 +283,19 @@ function Question({ w }: { w: Waiting }) {
               </Row>
             </Stack>
           ))}
-          <Button size="xs" tone="accent" disabled={w.parts.some((_, i) => !picked[i])} onPress={() => void send(w, w.parts!.map((_, i) => picked[i]!))}>
+          <Button size={sz()} tone="accent" disabled={w.parts.some((_, i) => !picked[i])} onPress={() => void send(w, w.parts!.map((_, i) => picked[i]!))}>
             Odeslat
           </Button>
         </Stack>
       ) : (
         <Stack gap="xs">
-          <Text size="xs" weight="medium">
+          <Text size={sz()} weight="medium">
             {w.text}
           </Text>
           {w.options.length > 0 && (
             <Row gap="xs" wrap>
               {w.options.map((o, i) => (
-                <Button size="xs" tone={i === 0 ? 'accent' : 'neutral'} tooltip={w.descriptions?.[i] || undefined} onPress={() => void send(w, [{ text: o, typed: false }])}>
+                <Button size={sz()} tone={i === 0 ? 'accent' : 'neutral'} tooltip={(read(cfg).descriptions && w.descriptions?.[i]) || undefined} onPress={() => void send(w, [{ text: o, typed: false }])}>
                   {o}
                 </Button>
               ))}
@@ -262,12 +304,15 @@ function Question({ w }: { w: Waiting }) {
           {writing && <Own w={w} label={w.options.length ? 'Jiná odpověď…' : 'Tvoje odpověď…'} />}
         </Stack>
       )}
-      {context && (
-        <Collapsible title="Kontext">
-          <Text size="xs" muted>
-            {context}
-          </Text>
-        </Collapsible>
+      {context && read(cfg).context && (
+        <Stack gap="none">
+          <Fold title="Kontext" open={!!read(contextOpen)[w.id]} onToggle={() => update(contextOpen, m => ({ ...m, [w.id]: !m[w.id] }))} />
+          {read(contextOpen)[w.id] && (
+            <Text size={sz()} muted>
+              {context}
+            </Text>
+          )}
+        </Stack>
       )}
     </Box>
   )
@@ -282,12 +327,14 @@ export default function Panel() {
   return (
     <Stack gap="md">
       <Row justify="between">
-        <Text weight="semibold">Čeká na tebe</Text>
+        <Text size={sz()} weight="semibold">
+          Čeká na tebe
+        </Text>
         <Badge tone={shown.length ? 'warning' : 'neutral'}>{all === null ? '-' : String(shown.length)}</Badge>
       </Row>
       {n && <Callout tone="warning">{n}</Callout>}
       {msg && (
-        <Text size="sm" muted>
+        <Text size={sz()} muted>
           {msg}
         </Text>
       )}
@@ -298,7 +345,7 @@ export default function Panel() {
         <Question w={w} />
       ))}
       {hidden.size > 0 && shown.length > 0 && (
-        <Button variant="ghost" size="sm" onPress={() => set(later, [])}>
+        <Button variant="ghost" size={sz()} onPress={() => set(later, [])}>
           Vrátit odložené ({hidden.size})
         </Button>
       )}

@@ -122,6 +122,10 @@ Centrálu v Orce dělá plugin Orcy ve složce [`orca/`](orca/), bez modelu, tak
   před 45–60 min), pracuje, hotovo, sbalené dřívější; barevný proužek ukáže poměr skupin. Přehled jde sbalit a panel
   si to pamatuje. Klik na řádek ukáže workspace okna; konkrétní chat Orca pluginům přepnout nedovolí.
 
+Nastavení panelu (Orca → Settings → plugin Centrála): velikost písma (Malé / Normální), přehled oken,
+dřívější okna, barevný proužek, kontext u otázek a popisy voleb. Malé je nejmenší písmo, které Orca
+pluginům dovolí.
+
 Noc, ráno a Remote Control v Orce zatím nejsou.
 
 ### Instalace do Orcy
