@@ -177,7 +177,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('fronta.answer', async input => c.answer(input))
   orca.panels.handle('fronta.open', async ({ workspaceId }) => {
     if (!workspaceId) return { ok: false }
-    await orca.workspace.open({ workspaceId })
-    return { ok: true }
+    try {
+      await orca.host.call('workspace.open', { workspaceId })
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, reason: String((error as Error)?.message ?? error).slice(0, 160) }
+    }
   })
 }

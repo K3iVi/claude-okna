@@ -13,7 +13,7 @@ declare module 'orca' {
       output: { ok: boolean; reason?: string }
     }
     /** Shows the window's workspace in Orca. */
-    'fronta.open': { input: { workspaceId: string }; output: { ok: boolean } }
+    'fronta.open': { input: { workspaceId: string }; output: { ok: boolean; reason?: string } }
   }
   interface PluginPanelEvents {
     /** Posted to open panels whenever the list changes. */

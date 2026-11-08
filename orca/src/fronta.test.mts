@@ -125,10 +125,12 @@ test('the worker writes the answer only for the question asked now, then hides i
   assert.equal(c.get().waiting.length, 0)
 })
 
-test('the worker starts and answers the panel', async () => {
-  const host = mockHost({})
+test('the worker starts, answers the panel and shows a window', async () => {
+  const host = mockHost({ results: { 'workspace.open': { opened: true } } })
   const worker = await mountWorker(main, { host })
   const got = (await worker.request('fronta.get')) as { waiting: unknown[] }
   assert.ok(Array.isArray(got.waiting))
+  assert.deepEqual(await worker.request('fronta.open', { workspaceId: 'r::C:/kod/x' }), { ok: true })
+  assert.deepEqual(host.callsOf('workspace.open'), [{ workspaceId: 'r::C:/kod/x' }])
   await worker.deactivate()
 })

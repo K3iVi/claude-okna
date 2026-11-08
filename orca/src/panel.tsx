@@ -57,7 +57,11 @@ async function send(w: Waiting, picks: { text: string; typed: boolean }[]) {
   update(typedText, m => ({ ...m, [w.id]: '' }))
 }
 
-const open = (w: { workspaceId: string }) => void plugin.request('fronta.open', { workspaceId: w.workspaceId })
+const open = (w: { workspaceId: string; title: string }) =>
+  void plugin.request('fronta.open', { workspaceId: w.workspaceId }).then(
+    out => !out.ok && set(message, `„${w.title}“: okno se nepodařilo otevřít${out.reason ? ` (${out.reason})` : ''}`),
+    () => set(message, `„${w.title}“: okno se nepodařilo otevřít`),
+  )
 
 // Each group has its colour (assets/<group>.png), as in the Okna panel of the Claude app: a square
 // at its heading and its share of the stripe above the list.
