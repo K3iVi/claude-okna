@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'claude-code'
 
 import type { RemotePc, Row } from '../types'
+import { COMPACT_DIR, compactTime, parseCompact } from './compact'
+import type { Compact } from './compact'
 import { startsAnyTurn, turnEnding } from './transcript'
 import type { BoxQuestion, TurnEnding } from './transcript'
 import {
@@ -469,6 +471,7 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
       // Each window's activity as the rows show it: now while running, else its last reply.
       const activity: Record<string, string> = {}
       const rows: Row[] = []
+      const compacts = await readCompacts($, now)
       for (const s of sessions) {
         // What the window wrote of itself (0.9): believed while fresh and in step with the app; else
         // (an older plugin there, a hook that failed) the transcript decides, as before.
@@ -594,7 +597,11 @@ async function poll($: EngineInterface, force: boolean): Promise<Row[] | undefin
         // Its turn over but subagents still at work: working, unless it asked you something.
         const background = !running && !waiting && (await worksInBackground($, record, now))
         const parent = record?.spawnedFrom?.sessionId || record?.forkedFromSessionId
+        const compact = [s.sessionId, record?.cliSessionId, record?.lastAssistantCliSessionId]
+          .map(id => (id ? compacts.get(id) : undefined))
+          .find(Boolean)
         rows.push({
+          ...(compact ? { compact } : {}),
           ...(typeof parent === 'string' && parent ? { parent } : {}),
           turn,
           deferred: !running && deferred[s.sessionId] === (turn || act),
@@ -820,6 +827,24 @@ type Brief = { id: string; title: string; link: string; since: string }
 type Night = { od: string; do: string }
 
 let home: string | undefined
+// The recent compacts of the hlidac-compact plugin, by file id: one listing of its folder, and
+// only the files touched within a day are read.
+async function readCompacts($: EngineInterface, now: number): Promise<Map<string, Compact>> {
+  const found = new Map<string, Compact>()
+  try {
+    const dir = `${await homeDir($)}/${COMPACT_DIR}`
+    if (!(await $.fs.exists(dir))) return found
+    for (const f of await $.fs.list(dir)) {
+      if (!f.name.endsWith('.json') || now - f.mtimeMs > 25 * 3_600_000) continue
+      const compact = parseCompact(((await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as string) ?? '', now)
+      if (compact) found.set(f.name.slice(0, -5), compact)
+    }
+  } catch {
+    // no folder, no marks
+  }
+  return found
+}
+
 const homeDir = async ($: EngineInterface) => (home ??= await envVar($, 'USERPROFILE'))
 
 async function readNight($: EngineInterface): Promise<Night | undefined> {
@@ -1750,6 +1775,12 @@ export const register: Register = on => {
     // buttons beside the title under the pointer; a waiting window adds its question.
     const windowRow = (row: Row, dim: boolean, kinds: ('defer' | 'hide' | 'back')[]) => {
       const left = cacheLeftMin(row, now)
+      const ageText =
+        left !== null && !dim ? (
+          <Text color={COLORS.cache}>za {left} min</Text>
+        ) : (
+          <Text dimColor>{age(row.lastActivityAt, now)}</Text>
+        )
       return (
         <Box key={row.id} flexDirection="column" paddingLeft={3} minWidth={0}>
           <Box key={`row-${row.id}`} flexDirection="row" justifyContent="space-between" gap={1}>
@@ -1762,10 +1793,13 @@ export const register: Register = on => {
               {actions(row, kinds)}
             </Box>
             <Box flexShrink={0}>
-              {left !== null && !dim ? (
-                <Text color={COLORS.cache}>za {left} min</Text>
+              {row.compact ? (
+                <Box flexDirection="row" gap={1}>
+                  <Text dimColor>{`🗜 ${compactTime(row.compact)}`}</Text>
+                  {ageText}
+                </Box>
               ) : (
-                <Text dimColor>{age(row.lastActivityAt, now)}</Text>
+                ageText
               )}
             </Box>
           </Box>

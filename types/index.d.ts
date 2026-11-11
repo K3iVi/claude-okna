@@ -15,6 +15,8 @@ export type Row = {
   // comes back once it changes, i.e. once you write into it (a compact leaves it alone).
   turn: string
   deferred: boolean
+  // Compacted by the hlidac-compact plugin within the last day (its file for the window).
+  compact?: { at: string; idleMin?: number; before?: number; after?: number | null }
   // This PC's waiting windows: the question as the window asked it, with the replies its buttons send.
   // The window this one was forked or started from (its app record says so).
   parent?: string

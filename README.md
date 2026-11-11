@@ -104,6 +104,12 @@ v nastavený čas (výchozí 7:00) nebo na **„ráno“** vrátí oprávnění,
 Okna se řídí pravidlem „Režim noc“ ve tvém `CLAUDE.md` — sepiš si do něj, co smí rozhodnout sama
 (kód, testy, commity…) a co nikdy (nasazení, zprávy ven, mazání…).
 
+## Značka od hlídače compactu
+
+Pokud okno zkompaktoval plugin hlídač compactu (`hlidac-compact`), ukáže jeho řádek vpravo nenápadné
+`🗜 HH:MM` (místní čas compactu; jen do 24 hodin). Plugin čte soubor
+`~/.claude/hlidac-compact/compacty/<id relace>.json`; chybí-li nebo je poškozený, značka prostě není (0.9.11+).
+
 ## Orca
 
 V Orce aplikace Claude chybí, takže panel Okna
